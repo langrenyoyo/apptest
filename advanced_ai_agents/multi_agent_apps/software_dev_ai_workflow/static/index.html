@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>软件开发公司 AI 工作流</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace">
+        <aside class="panel form-panel">
+          <div class="brand">
+            <span class="mark">AI</span>
+            <div>
+              <h1>软件交付工作流</h1>
+              <p>面向软件开发公司的一站式 AI 交付工作台</p>
+            </div>
+          </div>
+
+          <form id="workflowForm" class="form">
+            <label>
+              项目名称
+              <input name="project_name" value="AI 合同审查门户" required />
+            </label>
+            <label>
+              客户名称
+              <input name="client_name" value="某法律服务公司" />
+            </label>
+            <label>
+              所属行业
+              <input name="industry" value="法律科技" />
+            </label>
+            <label>
+              业务目标
+              <textarea name="goal" required>建设一个安全的 Web 应用，让法务团队可以上传合同、基于知识库提问、识别高风险条款、生成审查报告，并在发送给客户前完成负责人审批。</textarea>
+            </label>
+            <label>
+              原始材料
+              <textarea name="source_material">会议纪要提到：登录、角色权限、文档上传、RAG 检索、数据看板、客户复核流程、PDF 导出，以及未来对接 Jira/GitHub 来管理内部交付任务。</textarea>
+            </label>
+            <label>
+              约束条件
+              <textarea name="constraints">必须支持隐私保护、审计日志、人工审批，交付周期控制在四到六个迭代内。客户偏好 Postgres 和对象存储。</textarea>
+            </label>
+            <label>
+              目标用户
+              <input name="target_users" value="律师、律师助理、客户成功经理、系统管理员" />
+            </label>
+            <label>
+              首选技术栈
+              <input name="tech_stack" value="Next.js、FastAPI、Postgres、Redis、Qdrant、S3 兼容对象存储" />
+            </label>
+            <button type="submit" id="runButton">运行 AI 工作流</button>
+          </form>
+        </aside>
+
+        <section class="results">
+          <header class="toolbar">
+            <div>
+              <p class="eyebrow">工作流产物</p>
+              <h2 id="projectTitle">等待生成</h2>
+              <p id="modeLine" class="mode-line">尚未运行</p>
+            </div>
+            <div class="actions">
+              <button type="button" id="githubButton" class="secondary">创建 GitHub Issues</button>
+              <button type="button" id="jiraButton" class="secondary">创建 Jira Issues</button>
+              <a class="export" href="/api/workflows/latest/export" target="_blank">导出 Markdown</a>
+            </div>
+          </header>
+
+          <div id="integrationStatus" class="notice"></div>
+          <div id="metrics" class="metrics"></div>
+          <div id="backlog" class="backlog"></div>
+          <div id="timeline" class="timeline">
+            <div class="empty">
+              <h3>运行工作流，生成项目交付包。</h3>
+              <p>产物包含需求澄清、PRD、技术架构、实施计划、QA 清单和客户交付材料。</p>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
