@@ -7,19 +7,55 @@ const modeLine = document.getElementById("modeLine");
 const backlog = document.getElementById("backlog");
 const integrationStatus = document.getElementById("integrationStatus");
 const runtimeStatus = document.getElementById("runtimeStatus");
+const agentEmployeeBoard = document.getElementById("agentEmployeeBoard");
 const githubButton = document.getElementById("githubButton");
 const jiraButton = document.getElementById("jiraButton");
+const prototypeButton = document.getElementById("prototypeButton");
+const prototypePanel = document.getElementById("prototypePanel");
+const businessUiButton = document.getElementById("businessUiButton");
+const businessUiPanel = document.getElementById("businessUiPanel");
+const businessUiStyleSelect = document.getElementById("businessUiStyleSelect");
+const uiDesignerButton = document.getElementById("uiDesignerButton");
+const uiDesignerPanel = document.getElementById("uiDesignerPanel");
 const projectForm = document.getElementById("projectForm");
 const projectList = document.getElementById("projectList");
 const projectIdInput = document.getElementById("projectIdInput");
 const refreshProjectsButton = document.getElementById("refreshProjectsButton");
+const authView = document.getElementById("authView");
+const projectHomeView = document.getElementById("projectHomeView");
+const workflowView = document.getElementById("workflowView");
+const loginForm = document.getElementById("loginForm");
+const logoutButton = document.getElementById("logoutButton");
+const backToProjectsButton = document.getElementById("backToProjectsButton");
+const projectSearchInput = document.getElementById("projectSearchInput");
+const activeProjectLine = document.getElementById("activeProjectLine");
 
 let latestWorkflow = null;
 let statusTimer = null;
 let runtimeConfig = null;
 let implementationPlans = {};
 let patchDrafts = {};
+let latestPrototype = null;
+let latestBusinessUi = null;
+let latestUiDesigner = null;
 let projectsState = { active_project_id: "default", projects: [] };
+let projectSearchTerm = "";
+let selectedPageIssueKey = "";
+let selectedAgentEmployeeId = "";
+
+function showView(name) {
+  authView?.classList.toggle("hidden", name !== "auth");
+  projectHomeView?.classList.toggle("hidden", name !== "projects");
+  workflowView?.classList.toggle("hidden", name !== "workflow");
+}
+
+function isLoggedIn() {
+  return localStorage.getItem("aiWorkflowLoggedIn") === "true";
+}
+
+function requireLoginView() {
+  showView(isLoggedIn() ? "projects" : "auth");
+}
 
 const agentOrder = [
   "需求分析 Agent",
@@ -67,6 +103,7 @@ function modeLabel(mode) {
 }
 
 function renderMetrics(values = {}) {
+  if (!metrics) return;
   metrics.innerHTML = Object.entries(values)
     .map(
       ([key, value]) => `
@@ -176,8 +213,8 @@ async function selectProject(projectId) {
     projectTitle.textContent = data.project.name || "等待生成";
     modeLine.textContent = "当前项目尚未运行工作流";
     metrics.innerHTML = "";
-    backlog.innerHTML = "";
-    timeline.innerHTML = `
+    if (backlog) backlog.innerHTML = "";
+    if (timeline) timeline.innerHTML = `
       <div class="empty">
         <h3>当前项目尚未生成工作流</h3>
         <p>填写左侧项目信息并运行 AI 工作流，即可生成交付包和 Backlog。</p>
@@ -188,6 +225,7 @@ async function selectProject(projectId) {
 }
 
 function renderBacklog(issues = []) {
+  if (!backlog) return;
   if (!issues.length) {
     backlog.innerHTML = "";
     return;
@@ -267,6 +305,7 @@ function renderModuleBacklog(issues = []) {
 }
 
 renderBacklog = function renderBacklogModuleView(issues = []) {
+  if (!backlog) return;
   if (!issues.length) {
     backlog.innerHTML = "";
     return;
@@ -335,6 +374,36 @@ function renderIssueCard(issue) {
     </article>
   `;
 }
+
+function renderSandboxBlock(issue) {
+  const sandbox = issue.sandbox;
+  if (!sandbox) return "";
+  return `
+    <section class="sandbox-block">
+      <div class="sandbox-head">
+        <div>
+          <b>沙盒测试契约</b>
+          <span>${escapeHtml(sandbox.route || "未指定沙盒入口")}</span>
+        </div>
+        <code>${escapeHtml(sandbox.mock_data_id || "mock-demo")}</code>
+      </div>
+      ${renderMiniList("Mock API", sandbox.api_contract || issue.api_contract || [])}
+      ${renderMiniList("Mock 数据字段", Object.entries(issue.mock_data || sandbox.mock_data || {}).slice(0, 6).map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`))}
+      ${renderMiniList("沙盒验证", sandbox.sandbox_tests || issue.test_plan || [])}
+      ${renderMiniList("人工验收", sandbox.manual_checks || issue.manual_checks || [])}
+    </section>
+  `;
+}
+
+const renderIssueCardBase = renderIssueCard;
+renderIssueCard = function renderSandboxReadyIssueCard(issue) {
+  const html = renderIssueCardBase(issue);
+  return html.replace(
+    '<button type="button" class="generate-code-button"',
+    `${renderSandboxBlock(issue)}
+      <button type="button" class="generate-code-button"`
+  );
+};
 
 function renderModuleBacklog(issues = []) {
   const modules = groupModuleIssues(issues);
@@ -747,6 +816,7 @@ function renderCommitDraft(draft) {
 }
 
 function renderStages(stages = []) {
+  if (!timeline) return;
   if (!stages.length) {
     timeline.innerHTML = `
       <div class="empty">
@@ -793,6 +863,7 @@ function runtimeConfigLine() {
 }
 
 function renderRuntimeStatus(status = null) {
+  if (!runtimeStatus) return;
   const configLine = runtimeConfigLine();
   if (!status && !configLine) {
     runtimeStatus.innerHTML = "";
@@ -830,17 +901,391 @@ function renderRuntimeStatus(status = null) {
   `;
 }
 
+function renderAgentEmployees(employees = []) {
+  if (!agentEmployeeBoard) return;
+  if (!employees.length) {
+    agentEmployeeBoard.innerHTML = "";
+    return;
+  }
+
+  const selectedIndex = employees.findIndex((employee) => employee.id === selectedAgentEmployeeId);
+  const selected = selectedIndex >= 0 ? employees[selectedIndex] : null;
+  const renderFullEmployeeCard = (employee, index, detailMode = false) => {
+    const upstream = index > 0 ? employees[index - 1] : null;
+    const downstream = index < employees.length - 1 ? employees[index + 1] : null;
+    const outputs = employee.outputs || [];
+    const deliverables = employee.deliverables || [];
+    return `
+      <article class="agent-role-card ${detailMode ? "detail-mode" : ""} ${escapeHtml(employee.status || "pending")}">
+        <header>
+          <span>${String(employee.order || "").padStart(2, "0")}</span>
+          <div>
+            <p class="eyebrow">${escapeHtml(employee.agent_name || "")}</p>
+            <h4>${escapeHtml(employee.title || "Agent 员工")}</h4>
+          </div>
+          <em>${escapeHtml(employee.status === "completed" ? "已完成" : "待执行")}</em>
+        </header>
+        <div class="agent-card-sections">
+          <section>
+            <b>职责</b>
+            <p>${escapeHtml(employee.responsibility || "")}</p>
+          </section>
+          <section>
+            <b>当前任务</b>
+            <p>${escapeHtml(employee.current_task || employee.responsibility || "")}</p>
+          </section>
+          <section>
+            <b>岗位交付物</b>
+            <div class="agent-output-list">
+              ${deliverables.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+            </div>
+          </section>
+          <section>
+            <b>已生成产物</b>
+            <div class="agent-output-list">
+              ${outputs.map((item) => `<span>${escapeHtml(item.title || item)}</span>`).join("")}
+            </div>
+          </section>
+          <section class="agent-flow-section">
+            <b>上下游</b>
+            <p>输入：${escapeHtml(upstream ? `${upstream.title} / ${upstream.agent_name}` : "客户原始业务需求")}</p>
+            <p>交付：${escapeHtml(downstream ? `${downstream.title} / ${downstream.agent_name}` : "客户验收与项目交付包")}</p>
+          </section>
+          <section>
+            <b>验收关注</b>
+            <ul>
+              <li>产物能被下游岗位直接使用</li>
+              <li>风险、状态和负责人清晰</li>
+              <li>保留人工确认和沙盒验证入口</li>
+            </ul>
+          </section>
+        </div>
+      </article>
+    `;
+  };
+
+  if (selected) {
+    agentEmployeeBoard.innerHTML = `
+      <section class="agent-employees-panel agent-employee-detail-page">
+        <div class="agent-employees-head">
+          <div>
+            <p class="eyebrow">Agent 员工详情页</p>
+            <h3>${escapeHtml(selected.title || "员工详情")}</h3>
+            <p>该员工的所有详情及交付物已按分类放在员工卡片内。</p>
+          </div>
+          <button type="button" class="secondary" data-agent-back>返回员工列表</button>
+        </div>
+        ${renderFullEmployeeCard(selected, selectedIndex, true)}
+      </section>
+    `;
+    return;
+  }
+
+  agentEmployeeBoard.innerHTML = `
+    <section class="agent-employees-panel">
+      <div class="agent-employees-head">
+        <div>
+          <p class="eyebrow">Agent 员工岗位索引</p>
+          <h3>点击员工卡片进入详情页</h3>
+          <p>员工列表展示岗位摘要，进入详情页后可查看该员工的全部分类详情和交付物。</p>
+        </div>
+      </div>
+      <div class="agent-employee-card-grid">
+        ${employees
+          .map((employee) => {
+            const outputs = employee.outputs || [];
+            const deliverables = employee.deliverables || [];
+            return `
+              <button type="button" class="agent-role-entry-card ${escapeHtml(employee.status || "pending")}" data-agent-detail-id="${escapeHtml(employee.id)}">
+                <header>
+                  <span>${String(employee.order || "").padStart(2, "0")}</span>
+                  <div>
+                    <p class="eyebrow">${escapeHtml(employee.agent_name || "")}</p>
+                    <h4>${escapeHtml(employee.title || "Agent 员工")}</h4>
+                  </div>
+                  <em>${escapeHtml(employee.status === "completed" ? "已完成" : "待执行")}</em>
+                </header>
+                <p>${escapeHtml(employee.responsibility || "")}</p>
+                <div class="agent-output-list">
+                  ${deliverables.slice(0, 3).map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+                  ${outputs.length ? `<span>${outputs.length} 个已生成产物</span>` : ""}
+                </div>
+              </button>
+            `;
+          })
+          .join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderWorkflow(workflow) {
   latestWorkflow = workflow;
+  selectedPageIssueKey = "";
+  selectedAgentEmployeeId = "";
   projectTitle.textContent = workflow.project_name || "未命名项目";
   modeLine.textContent = `${modeLabel(workflow.generation_mode)}${workflow.model ? ` / ${workflow.model}` : ""}`;
   integrationStatus.textContent = workflow.generation_error
     ? `AI 生成失败，已保留规则结果：${workflow.generation_error}`
     : "";
-  renderMetrics(workflow.metrics);
-  backlog.innerHTML = renderModuleBacklog(workflow.backlog_issues || []);
-  renderStages(workflow.stages);
+  renderAgentEmployees(workflow.agent_employees || []);
 }
+
+const renderWorkflowBase = renderWorkflow;
+
+function pageIssueName(issue = {}) {
+  const title = issue.title || "";
+  return (
+    title.match(/页面[「《](.*?)[」》]/)?.[1] ||
+    issue.sandbox?.mock_data?.page_name ||
+    title.replace(/^PAGE-\d+\s*/i, "").replace(/实施方案|Patch|代码生成|沙盒测试|页面|、|，|,/g, " ").replace(/\s+/g, " ").trim() ||
+    issue.key ||
+    "未命名页面"
+  );
+}
+
+function pageIssuePurpose(issue = {}) {
+  const bodyLine = String(issue.body || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith("#") && !/^\d+\./.test(line) && !line.startsWith("- "));
+  return issue.sandbox?.mock_data?.primary_action || bodyLine || "按当前业务流程生成页面实施、Patch、代码和沙盒测试任务。";
+}
+
+function renderPageIssueListItem(issue, index, active) {
+  const sandbox = issue.sandbox || {};
+  return `
+    <button type="button" class="page-list-item ${active ? "active" : ""}" data-select-page-key="${escapeHtml(issue.key)}">
+      <span class="page-index">${String(index + 1).padStart(2, "0")}</span>
+      <span class="page-list-copy">
+        <strong>${escapeHtml(pageIssueName(issue))}</strong>
+        <small>${escapeHtml(issue.owner || "Full-stack Engineer")} · ${escapeHtml(issue.estimate || "0.5-1 day")}</small>
+        <small>${escapeHtml(sandbox.route || issue.key || "待生成沙盒入口")}</small>
+      </span>
+      <em>${escapeHtml(issue.priority || "P2")}</em>
+    </button>
+  `;
+}
+
+function renderPageIssueDetail(issue) {
+  if (!issue) {
+    return `
+      <section class="page-detail-empty">
+        <h3>选择一个页面查看详情</h3>
+        <p>左侧按页面列出实施任务，点击后可查看业务目标、沙盒契约、实施步骤、测试计划，并生成实施方案、Patch 草案和代码。</p>
+      </section>
+    `;
+  }
+  const sandbox = issue.sandbox || {};
+  return `
+    <article class="page-detail">
+      <header class="page-detail-head">
+        <div>
+          <p class="eyebrow">${escapeHtml(issue.key || "PAGE")}</p>
+          <h3>${escapeHtml(pageIssueName(issue))}</h3>
+          <p>${escapeHtml(pageIssuePurpose(issue))}</p>
+        </div>
+        <span class="priority">${escapeHtml(issue.priority || "P2")}</span>
+      </header>
+
+      <div class="page-detail-meta">
+        <span>${escapeHtml(issue.owner || "Full-stack Engineer")}</span>
+        <span>${escapeHtml(issue.estimate || "0.5-1 day")}</span>
+        <span>${escapeHtml((issue.labels || ["page", "sandbox"]).join(" / "))}</span>
+      </div>
+
+      ${sandbox.route ? `
+        <section class="page-route-card">
+          <div>
+            <b>沙盒页面</b>
+            <code>${escapeHtml(sandbox.route)}</code>
+          </div>
+          <div>
+            <b>Mock API</b>
+            <code>${escapeHtml(sandbox.api_base || "待生成")}</code>
+          </div>
+        </section>
+      ` : ""}
+
+      ${renderSandboxBlock(issue)}
+
+      <div class="page-detail-grid">
+        ${renderMiniList("涉及文件", issue.affected_files)}
+        ${renderMiniList("实施步骤", issue.implementation_steps)}
+        ${renderMiniList("测试计划", issue.test_plan)}
+        ${renderMiniList("验收标准", issue.acceptance_criteria)}
+      </div>
+
+      <section class="page-actions-panel">
+        <button type="button" class="generate-code-button" data-code-key="${escapeHtml(issue.key)}">AI 生成代码</button>
+        <button type="button" class="plan-button" data-issue-key="${escapeHtml(issue.key)}">生成实施方案</button>
+        <button type="button" class="patch-button" data-patch-key="${escapeHtml(issue.key)}">生成 Patch 草案</button>
+      </section>
+
+      ${renderImplementationPlan(issue.key)}
+      ${renderPatchDraft(issue.key)}
+    </article>
+  `;
+}
+
+renderBacklog = function renderPageBacklogListView(issues = []) {
+  if (!backlog) return;
+  backlog.innerHTML = "";
+};
+
+function renderPrototypePanel(result = latestPrototype) {
+  if (!prototypePanel) return;
+  if (!result) {
+    prototypePanel.innerHTML = "";
+    return;
+  }
+  if (result.loading) {
+    prototypePanel.innerHTML = `
+      <section class="prototype-card">
+        <div>
+          <p class="eyebrow">产品原型</p>
+          <h3>正在根据需求生成原型...</h3>
+        </div>
+      </section>
+    `;
+    return;
+  }
+  if (result.error) {
+    prototypePanel.innerHTML = `
+      <section class="prototype-card error">
+        <div>
+          <p class="eyebrow">产品原型</p>
+          <h3>原型生成失败</h3>
+          <p>${escapeHtml(result.error)}</p>
+        </div>
+      </section>
+    `;
+    return;
+  }
+
+  prototypePanel.innerHTML = `
+    <section class="prototype-card">
+      <div class="prototype-copy">
+        <p class="eyebrow">产品原型</p>
+        <h3>${escapeHtml(result.title || "需求驱动产品原型")}</h3>
+        <p>${escapeHtml(result.summary || "已根据当前项目需求生成可点击产品原型。")}</p>
+        <div class="prototype-meta">
+          ${(result.screens || []).map((screen) => `<span>${escapeHtml(screen)}</span>`).join("")}
+        </div>
+      </div>
+      <div class="prototype-actions">
+        <a class="export" href="${escapeHtml(result.preview_url)}" target="_blank">打开原型</a>
+        <a class="secondary link-button" href="${escapeHtml(result.preview_url)}?embed=1" target="_blank">演示视图</a>
+      </div>
+      <iframe src="${escapeHtml(result.preview_url)}?embed=1" title="产品原型预览"></iframe>
+    </section>
+  `;
+}
+
+function renderBusinessUiPanel(result = latestBusinessUi) {
+  if (!businessUiPanel) return;
+  if (!result) {
+    businessUiPanel.innerHTML = "";
+    return;
+  }
+  if (result.loading) {
+    businessUiPanel.innerHTML = `
+      <section class="prototype-card">
+        <div>
+          <p class="eyebrow">业务 UI 图</p>
+          <h3>正在生成业务设计图...</h3>
+        </div>
+      </section>
+    `;
+    return;
+  }
+  if (result.error) {
+    businessUiPanel.innerHTML = `
+      <section class="prototype-card error">
+        <div>
+          <p class="eyebrow">业务 UI 图</p>
+          <h3>业务 UI 图生成失败</h3>
+          <p>${escapeHtml(result.error)}</p>
+        </div>
+      </section>
+    `;
+    return;
+  }
+  businessUiPanel.innerHTML = `
+    <section class="prototype-card business-ui-card">
+      <div class="prototype-copy">
+        <p class="eyebrow">业务 UI 图</p>
+        <h3>${escapeHtml(result.title || "业务场景 UI 设计图")}</h3>
+        <p>${escapeHtml(result.summary || "已根据业务需求生成设计画板。")}</p>
+        <div class="prototype-meta">
+          ${result.style_label ? `<span>视觉风格：${escapeHtml(result.style_label)}</span>` : ""}
+          ${(result.boards || []).map((board) => `<span>${escapeHtml(board)}</span>`).join("")}
+        </div>
+      </div>
+      <div class="prototype-actions">
+        <a class="export" href="${escapeHtml(result.preview_url)}" target="_blank">打开设计图</a>
+        <a class="secondary link-button" href="${escapeHtml(result.preview_url)}?embed=1" target="_blank">演示视图</a>
+      </div>
+      <iframe src="${escapeHtml(result.preview_url)}?embed=1" title="业务 UI 设计图预览"></iframe>
+    </section>
+  `;
+}
+
+function renderUiDesignerPanel(result = latestUiDesigner) {
+  if (!uiDesignerPanel) return;
+  if (!result) {
+    uiDesignerPanel.innerHTML = "";
+    return;
+  }
+  if (result.loading) {
+    uiDesignerPanel.innerHTML = `
+      <section class="prototype-card">
+        <div>
+          <p class="eyebrow">UI 设计师 Agent</p>
+          <h3>正在生成视觉设计方案...</h3>
+        </div>
+      </section>
+    `;
+    return;
+  }
+  if (result.error) {
+    uiDesignerPanel.innerHTML = `
+      <section class="prototype-card error">
+        <div>
+          <p class="eyebrow">UI 设计师 Agent</p>
+          <h3>设计方案生成失败</h3>
+          <p>${escapeHtml(result.error)}</p>
+        </div>
+      </section>
+    `;
+    return;
+  }
+  const tokens = result.design_system?.tokens || {};
+  const components = result.design_system?.components || [];
+  uiDesignerPanel.innerHTML = `
+    <section class="prototype-card ui-designer-card">
+      <div class="prototype-copy">
+        <p class="eyebrow">UI 设计师 Agent</p>
+        <h3>${escapeHtml(result.title || "专业 UI 视觉设计方案")}</h3>
+        <p>${escapeHtml(result.summary || "已生成设计系统、页面视觉方案和效果图预览。")}</p>
+        <div class="prototype-meta">
+          ${result.style_label ? `<span>视觉风格：${escapeHtml(result.style_label)}</span>` : ""}
+          ${tokens.accent ? `<span>主色：${escapeHtml(tokens.accent)}</span>` : ""}
+          ${components.slice(0, 5).map((item) => `<span>${escapeHtml(item.name || item)}</span>`).join("")}
+        </div>
+      </div>
+      <div class="prototype-actions">
+        <a class="export" href="${escapeHtml(result.preview_url)}" target="_blank">打开效果图</a>
+        <a class="secondary link-button" href="${escapeHtml(result.preview_url)}?embed=1" target="_blank">演示视图</a>
+      </div>
+      <iframe src="${escapeHtml(result.preview_url)}?embed=1" title="UI 设计师效果图预览"></iframe>
+    </section>
+  `;
+}
+
+renderWorkflow = function renderWorkflowWithPrototype(workflow) {
+  renderWorkflowBase(workflow);
+};
 
 async function loadRuntimeConfig() {
   try {
@@ -886,12 +1331,13 @@ function startStatusPolling() {
 }
 
 async function createIssues(provider) {
+  const button = provider === "github" ? githubButton : jiraButton;
+  if (!button) return;
   if (!latestWorkflow) {
     integrationStatus.textContent = "请先运行工作流，再创建 issues。";
     return;
   }
 
-  const button = provider === "github" ? githubButton : jiraButton;
   const original = button.textContent;
   button.disabled = true;
   button.textContent = "创建中...";
@@ -916,6 +1362,117 @@ async function createIssues(provider) {
   } finally {
     button.disabled = false;
     button.textContent = original;
+  }
+}
+
+async function generateProductPrototype() {
+  if (!prototypeButton) return;
+  if (!latestWorkflow) {
+    integrationStatus.textContent = "请先运行 AI 工作流，再生成产品原型。";
+    return;
+  }
+
+  const original = prototypeButton.textContent;
+  prototypeButton.disabled = true;
+  prototypeButton.textContent = "生成中...";
+  latestPrototype = { loading: true };
+  renderPrototypePanel();
+
+  try {
+    const response = await fetch("/api/prototypes/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflow_id: latestWorkflow.workflow_id }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "产品原型生成失败");
+    latestPrototype = data;
+    integrationStatus.textContent = "产品原型已生成，可在下方预览或新窗口打开。";
+  } catch (error) {
+    latestPrototype = { error: error.message };
+    integrationStatus.textContent = error.message;
+  } finally {
+    prototypeButton.disabled = false;
+    prototypeButton.textContent = original;
+    renderPrototypePanel();
+  }
+}
+
+async function readJsonResponse(response, fallbackMessage) {
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { error: text || fallbackMessage };
+  }
+  if (!response.ok) throw new Error(data.error || fallbackMessage);
+  return data;
+}
+
+async function generateBusinessUiBoards() {
+  if (!businessUiButton) return;
+  if (!latestWorkflow) {
+    integrationStatus.textContent = "请先运行 AI 工作流，再生成业务 UI 图。";
+    return;
+  }
+
+  const original = businessUiButton.textContent;
+  businessUiButton.disabled = true;
+  businessUiButton.textContent = "生成中...";
+  latestBusinessUi = { loading: true };
+  renderBusinessUiPanel();
+
+  try {
+    const uiStyle = businessUiStyleSelect?.value || "enterprise-saas";
+    const response = await fetch("/api/business-ui/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflow_id: latestWorkflow.workflow_id, ui_style: uiStyle }),
+    });
+    const data = await readJsonResponse(response, "业务 UI 图生成失败");
+    latestBusinessUi = data;
+    integrationStatus.textContent = "业务 UI 图已生成，可在下方预览或新窗口打开。";
+  } catch (error) {
+    latestBusinessUi = { error: error.message };
+    integrationStatus.textContent = error.message;
+  } finally {
+    businessUiButton.disabled = false;
+    businessUiButton.textContent = original;
+    renderBusinessUiPanel();
+  }
+}
+
+async function generateUiDesignerConcept() {
+  if (!uiDesignerButton) return;
+  if (!latestWorkflow) {
+    integrationStatus.textContent = "请先运行 AI 工作流，再让 UI 设计师 Agent 生成效果图。";
+    return;
+  }
+
+  const original = uiDesignerButton.textContent;
+  uiDesignerButton.disabled = true;
+  uiDesignerButton.textContent = "设计中...";
+  latestUiDesigner = { loading: true };
+  renderUiDesignerPanel();
+
+  try {
+    const uiStyle = businessUiStyleSelect?.value || "enterprise-saas";
+    const response = await fetch("/api/ui-designer/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflow_id: latestWorkflow.workflow_id, ui_style: uiStyle }),
+    });
+    const data = await readJsonResponse(response, "UI 设计师 Agent 生成失败");
+    latestUiDesigner = data;
+    integrationStatus.textContent = "UI 设计师 Agent 已生成视觉设计方案和效果图。";
+  } catch (error) {
+    latestUiDesigner = { error: error.message };
+    integrationStatus.textContent = error.message;
+  } finally {
+    uiDesignerButton.disabled = false;
+    uiDesignerButton.textContent = original;
+    renderUiDesignerPanel();
   }
 }
 
@@ -1204,7 +1761,127 @@ async function generateCommitDraft(issueKey) {
   renderBacklog(latestWorkflow.backlog_issues || []);
 }
 
-backlog.addEventListener("click", (event) => {
+function renderProjects() {
+  if (!projectList) return;
+  const term = projectSearchTerm.trim().toLowerCase();
+  const projects = (projectsState.projects || []).filter((project) => {
+    if (!term) return true;
+    return [project.name, project.client_name, project.industry]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(term));
+  });
+
+  if (!projects.length) {
+    projectList.innerHTML = `<div class="project-empty">${term ? "没有匹配的项目。" : "暂无项目，先创建一个项目。"}</div>`;
+    return;
+  }
+
+  projectList.innerHTML = projects
+    .map((project) => {
+      const active = project.id === projectsState.active_project_id;
+      const latest = project.latest_workflow_at
+        ? new Date(project.latest_workflow_at).toLocaleString("zh-CN")
+        : "尚未运行工作流";
+      return `
+        <button type="button" class="project-card ${active ? "active" : ""}" data-project-id="${escapeHtml(project.id)}">
+          <span>
+            <strong>${escapeHtml(project.name || "未命名项目")}</strong>
+            <small>${escapeHtml([project.client_name, project.industry].filter(Boolean).join(" / ") || "未填写客户信息")}</small>
+            <small>${escapeHtml(latest)}</small>
+          </span>
+          <em>${escapeHtml(project.workflow_count || 0)} 次工作流</em>
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function syncActiveProjectToForm(project) {
+  if (!project) return;
+  projectIdInput.value = project.id;
+  if (activeProjectLine) {
+    activeProjectLine.textContent = `${project.name || "未命名项目"}${project.client_name ? ` / ${project.client_name}` : ""}`;
+  }
+  const projectNameInput = form.elements.project_name;
+  const clientInput = form.elements.client_name;
+  const industryInput = form.elements.industry;
+  if (projectNameInput && project.name) projectNameInput.value = project.name;
+  if (clientInput) clientInput.value = project.client_name || "";
+  if (industryInput) industryInput.value = project.industry || "";
+}
+
+async function createProject(event) {
+  event.preventDefault();
+  const button = projectForm.querySelector("button");
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = "创建中...";
+
+  try {
+    const response = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(formToJson(projectForm)),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "创建项目失败");
+    projectsState = { active_project_id: data.active_project_id, projects: data.projects };
+    projectForm.reset();
+    renderProjects();
+  } catch (error) {
+    window.alert(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+async function selectProject(projectId) {
+  const response = await fetch("/api/projects/select", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    window.alert(data.error || "切换项目失败");
+    return;
+  }
+
+  projectsState.active_project_id = data.active_project_id;
+  syncActiveProjectToForm(data.project);
+  renderProjects();
+  showView("workflow");
+  implementationPlans = {};
+  patchDrafts = {};
+  integrationStatus.textContent = "";
+
+  if (data.latest_workflow) {
+    renderWorkflow(data.latest_workflow);
+    return;
+  }
+
+  latestWorkflow = null;
+  projectTitle.textContent = data.project.name || "等待生成";
+  modeLine.textContent = "当前项目尚未运行工作流";
+  metrics.innerHTML = "";
+  renderAgentEmployees([]);
+  if (backlog) backlog.innerHTML = "";
+  if (timeline) timeline.innerHTML = `
+    <div class="empty">
+      <h3>当前项目尚未生成工作流</h3>
+      <p>填写左侧项目需求并运行 AI 工作流，即可生成交付包和 Backlog。</p>
+    </div>
+  `;
+}
+
+backlog?.addEventListener("click", (event) => {
+  const pageButton = event.target.closest("[data-select-page-key]");
+  if (pageButton) {
+    selectedPageIssueKey = pageButton.dataset.selectPageKey;
+    renderBacklog(latestWorkflow?.backlog_issues || []);
+    return;
+  }
   const validationInput = event.target.closest("[data-validation-key]");
   if (validationInput) {
     const issueKey = validationInput.dataset.validationKey;
@@ -1261,12 +1938,48 @@ backlog.addEventListener("click", (event) => {
   }
 });
 
+agentEmployeeBoard?.addEventListener("click", (event) => {
+  const backButton = event.target.closest("[data-agent-back]");
+  if (backButton) {
+    selectedAgentEmployeeId = "";
+    renderAgentEmployees(latestWorkflow?.agent_employees || []);
+    return;
+  }
+  const detailButton = event.target.closest("[data-agent-detail-id]");
+  if (!detailButton) return;
+  selectedAgentEmployeeId = detailButton.dataset.agentDetailId || "";
+  renderAgentEmployees(latestWorkflow?.agent_employees || []);
+});
+
 projectForm.addEventListener("submit", createProject);
 refreshProjectsButton.addEventListener("click", loadProjects);
+projectSearchInput?.addEventListener("input", (event) => {
+  projectSearchTerm = event.target.value || "";
+  renderProjects();
+});
 projectList.addEventListener("click", (event) => {
   const card = event.target.closest("[data-project-id]");
   if (!card) return;
   selectProject(card.dataset.projectId);
+});
+
+loginForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  localStorage.setItem("aiWorkflowLoggedIn", "true");
+  showView("projects");
+  loadProjects();
+});
+
+logoutButton?.addEventListener("click", () => {
+  localStorage.removeItem("aiWorkflowLoggedIn");
+  stopStatusPolling();
+  showView("auth");
+});
+
+backToProjectsButton?.addEventListener("click", () => {
+  stopStatusPolling();
+  showView("projects");
+  loadProjects();
 });
 
 form.addEventListener("submit", async (event) => {
@@ -1275,12 +1988,6 @@ form.addEventListener("submit", async (event) => {
   runButton.disabled = true;
   runButton.textContent = "正在生成...";
   integrationStatus.textContent = "";
-
-  renderRuntimeStatus({
-    running: true,
-    current_agent: "准备启动 Agent 团队",
-    completed_agents: [],
-  });
 
   try {
     const response = await fetch("/api/workflows/run", {
@@ -1295,36 +2002,24 @@ form.addEventListener("submit", async (event) => {
     renderWorkflow(workflow);
 
     if (workflow.generation_mode === "deterministic_pending") {
-      integrationStatus.textContent = "已先返回规则引擎结果，真实 Agent 正在后台优化。";
-      renderRuntimeStatus({
-        running: true,
-        current_agent: "准备启动 Agent 团队",
-        completed_agents: [],
-        workflow_id: workflow.workflow_id,
-      });
+      integrationStatus.textContent = "员工卡片已生成，真实 Agent 正在后台优化。";
       startStatusPolling();
     } else {
-      renderRuntimeStatus();
+      integrationStatus.textContent = "员工卡片已生成。";
     }
   } catch (error) {
-    timeline.innerHTML = `
-      <div class="empty">
-        <h3>工作流生成失败</h3>
-        <p>${escapeHtml(error.message)}</p>
-      </div>
-    `;
-    renderRuntimeStatus({
-      running: false,
-      error: error.message,
-      completed_agents: [],
-    });
+    integrationStatus.textContent = error.message;
   } finally {
     runButton.disabled = false;
     runButton.textContent = "运行 AI 工作流";
   }
 });
 
-githubButton.addEventListener("click", () => createIssues("github"));
-jiraButton.addEventListener("click", () => createIssues("jira"));
+githubButton?.addEventListener("click", () => createIssues("github"));
+jiraButton?.addEventListener("click", () => createIssues("jira"));
+prototypeButton?.addEventListener("click", generateProductPrototype);
+uiDesignerButton?.addEventListener("click", generateUiDesignerConcept);
+businessUiButton?.addEventListener("click", generateBusinessUiBoards);
+requireLoginView();
 loadRuntimeConfig();
-loadProjects();
+if (isLoggedIn()) loadProjects();

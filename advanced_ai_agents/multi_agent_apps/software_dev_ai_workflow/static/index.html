@@ -3,37 +3,128 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>软件开发公司 AI 工作流</title>
+    <title>软件开发公司 AI 交付工作台</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <main class="shell">
-      <section class="workspace">
-        <aside class="panel form-panel">
+      <section id="authView" class="auth-view">
+        <div class="auth-hero">
+          <p class="eyebrow">AI Delivery Studio</p>
+          <h1>从业务需求到沙盒测试的一站式交付工作台</h1>
+          <p>面向软件开发公司，按项目组织需求文档、参数文档、架构文档、业务原型图、业务 UI 图、实施方案、Patch 草案、代码生成和沙盒测试。</p>
+          <div class="auth-steps">
+            <span>业务需求</span>
+            <span>设计图</span>
+            <span>页面实施</span>
+            <span>沙盒验证</span>
+          </div>
+        </div>
+
+        <form id="loginForm" class="login-panel">
           <div class="brand">
             <span class="mark">AI</span>
             <div>
-              <h1>软件交付工作流</h1>
-              <p>面向软件开发公司的一站式 AI 交付工作台</p>
+              <h1>登录工作台</h1>
+              <p>演示环境使用本地登录状态，不连接外部身份系统。</p>
             </div>
           </div>
+          <label>
+            账号
+            <input name="username" value="delivery.manager" autocomplete="username" required />
+          </label>
+          <label>
+            密码
+            <input name="password" type="password" value="demo123456" autocomplete="current-password" required />
+          </label>
+          <button type="submit">进入项目中心</button>
+          <p class="login-hint">登录后先进入项目列表，选择项目后再运行 AI 交付流程。</p>
+        </form>
+      </section>
 
-          <section class="project-manager">
-            <div class="project-manager-head">
+      <section id="projectHomeView" class="project-home hidden">
+        <header class="home-header">
+          <div class="brand">
+            <span class="mark">AI</span>
+            <div>
+              <p class="eyebrow">项目中心</p>
+              <h1>客户 AI 交付项目</h1>
+              <p>以项目为索引管理业务需求、设计产物、研发任务和沙盒验证。</p>
+            </div>
+          </div>
+          <button type="button" id="logoutButton" class="secondary">退出</button>
+        </header>
+
+        <section class="home-summary">
+          <div><b>01</b><span>选择或创建项目</span></div>
+          <div><b>02</b><span>录入业务需求</span></div>
+          <div><b>03</b><span>生成文档与设计图</span></div>
+          <div><b>04</b><span>按页面实施并沙盒测试</span></div>
+        </section>
+
+        <section class="home-grid">
+          <section class="project-index">
+            <div class="section-head">
               <div>
-                <p class="eyebrow">项目管理</p>
-                <h2>多项目工作台</h2>
+                <p class="eyebrow">项目索引</p>
+                <h2>选择项目进入 AI 交付流程</h2>
               </div>
               <button type="button" id="refreshProjectsButton" class="icon-button" title="刷新项目">↻</button>
             </div>
+            <label class="search-box">
+              搜索项目
+              <input id="projectSearchInput" placeholder="按项目、客户或行业搜索" />
+            </label>
+            <div id="projectList" class="project-list project-list-large"></div>
+          </section>
+
+          <aside class="new-project-panel">
+            <div>
+              <p class="eyebrow">新项目</p>
+              <h2>创建客户交付项目</h2>
+              <p class="panel-note">创建后进入项目，首页会以业务需求为起点生成完整交付链路。</p>
+            </div>
             <form id="projectForm" class="project-form">
-              <input name="name" placeholder="项目名称" required />
-              <input name="client_name" placeholder="客户名称" />
-              <input name="industry" placeholder="所属行业" />
+              <label>
+                项目名称
+                <input name="name" placeholder="例如：AI 合同审查门户" required />
+              </label>
+              <label>
+                客户名称
+                <input name="client_name" placeholder="例如：某法律服务公司" />
+              </label>
+              <label>
+                所属行业
+                <input name="industry" placeholder="例如：法律科技" />
+              </label>
               <button type="submit">新建项目</button>
             </form>
-            <div id="projectList" class="project-list"></div>
-          </section>
+          </aside>
+        </section>
+      </section>
+
+      <section id="workflowView" class="workspace hidden">
+        <aside class="panel form-panel">
+          <div class="workspace-nav">
+            <button type="button" id="backToProjectsButton" class="secondary">返回项目列表</button>
+          </div>
+          <div class="brand">
+            <span class="mark">AI</span>
+            <div>
+              <p class="eyebrow">业务需求首页</p>
+              <h1>AI 交付工作流</h1>
+              <p id="activeProjectLine">进入项目后，从业务需求生成文档、原型、UI、实施方案、Patch、代码和沙盒测试。</p>
+            </div>
+          </div>
+
+          <div class="workflow-steps">
+            <span>需求</span>
+            <span>文档</span>
+            <span>原型</span>
+            <span>UI</span>
+            <span>实施</span>
+            <span>测试</span>
+          </div>
 
           <form id="workflowForm" class="form">
             <input type="hidden" id="projectIdInput" name="project_id" value="default" />
@@ -55,7 +146,7 @@
             </label>
             <label>
               原始材料
-              <textarea name="source_material">会议纪要提到：登录、角色权限、文档上传、RAG 检索、数据看板、客户复核流程、PDF 导出，以及未来对接 Jira/GitHub 来管理内部交付任务。</textarea>
+              <textarea name="source_material">会议纪要提到：登录、角色权限、文档上传、RAG 检索、数据看板、客户复核流程、PDF 导出，以及未来对接 Jira/GitHub 管理内部交付任务。</textarea>
             </label>
             <label>
               约束条件
@@ -69,34 +160,21 @@
               首选技术栈
               <input name="tech_stack" value="Next.js、FastAPI、Postgres、Redis、Qdrant、S3 兼容对象存储" />
             </label>
-            <button type="submit" id="runButton">运行 AI 工作流</button>
+            <button type="submit" id="runButton">生成 AI 交付方案</button>
           </form>
         </aside>
 
         <section class="results">
           <header class="toolbar">
             <div>
-              <p class="eyebrow">工作流产物</p>
+              <p class="eyebrow">Agent 员工卡片</p>
               <h2 id="projectTitle">等待生成</h2>
-              <p id="modeLine" class="mode-line">尚未运行</p>
-            </div>
-            <div class="actions">
-              <button type="button" id="githubButton" class="secondary">创建 GitHub Issues</button>
-              <button type="button" id="jiraButton" class="secondary">创建 Jira Issues</button>
-              <a class="export" href="/api/workflows/latest/export" target="_blank">导出 Markdown</a>
+              <p id="modeLine" class="mode-line">运行工作流后查看员工职责和交付详情</p>
             </div>
           </header>
 
           <div id="integrationStatus" class="notice"></div>
-          <div id="runtimeStatus" class="runtime-status"></div>
-          <div id="metrics" class="metrics"></div>
-          <div id="backlog" class="backlog"></div>
-          <div id="timeline" class="timeline">
-            <div class="empty">
-              <h3>运行工作流，生成项目交付包。</h3>
-              <p>产物包含需求澄清、PRD、技术架构、实施计划、QA 清单和客户交付材料。</p>
-            </div>
-          </div>
+          <div id="agentEmployeeBoard" class="agent-employee-board"></div>
         </section>
       </section>
     </main>

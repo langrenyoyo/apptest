@@ -112,7 +112,33 @@ function projectSummary(project) {
   };
 }
 
+function hasQuestionMarkMojibake(value) {
+  return typeof value === "string" && /\?{2,}/.test(value);
+}
+
+function cleanTextInput(value, fallback = "") {
+  if (value === undefined || value === null) return fallback;
+  const textValue = String(value);
+  return hasQuestionMarkMojibake(textValue) ? fallback : textValue;
+}
+
+function cleanWorkflowInput(input = {}) {
+  return {
+    ...input,
+    name: cleanTextInput(input.name, "未命名项目"),
+    project_name: cleanTextInput(input.project_name, input.name ? cleanTextInput(input.name, "未命名项目") : "AI 合同审查门户"),
+    client_name: cleanTextInput(input.client_name, "某法律服务公司"),
+    industry: cleanTextInput(input.industry, "法律科技"),
+    goal: cleanTextInput(input.goal, "建设一个安全的 Web 应用，支持客户需求管理、AI 交付工作流、产品原型生成和沙盒测试。"),
+    source_material: cleanTextInput(input.source_material, "需要登录、项目列表、需求录入、AI 工作流、产品原型、Mock API、沙盒测试和交付 Backlog。"),
+    constraints: cleanTextInput(input.constraints, "必须支持本地演示、无外部服务兜底、审计日志、人工审批和可回归测试。"),
+    target_users: cleanTextInput(input.target_users, "产品经理、研发负责人、前端工程师、测试工程师、交付经理"),
+    tech_stack: cleanTextInput(input.tech_stack, "Node.js、HTML、CSS、JavaScript、Mock API、内存数据"),
+  };
+}
+
 function createManagedProject(input = {}) {
+  input = cleanWorkflowInput(input);
   const now = new Date().toISOString();
   const project = {
     id: input.id || makeProjectId(),
@@ -132,6 +158,7 @@ function createManagedProject(input = {}) {
 }
 
 function ensureManagedProject(input = {}) {
+  input = cleanWorkflowInput(input);
   if (input.project_id) {
     const existing = managedProjects.find((project) => project.id === input.project_id);
     if (existing) return existing;
@@ -145,6 +172,7 @@ function ensureManagedProject(input = {}) {
 }
 
 function attachWorkflowToProject(workflow, input = {}) {
+  input = cleanWorkflowInput(input);
   const project = ensureManagedProject(input);
   project.name = input.project_name || project.name;
   project.client_name = input.client_name || project.client_name;
@@ -182,6 +210,23 @@ function text(res, status, body) {
     "Content-Length": Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+function html(res, status, body) {
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function readBody(req) {
@@ -303,7 +348,7 @@ function updateWorkflowStatus(patch) {
 function withTimeout(promise, ms, label) {
   let timeoutId;
   const timeout = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(`${label} 超时：超过 ${Math.round(ms / 1000)} 秒未返回`)), ms);
+    timeoutId = setTimeout(() => reject(new Error(`${label} 等待 AI 返回超时：超过 ${Math.round(ms / 1000)} 秒未返回。可继续加大 OPENAI_REQUEST_TIMEOUT_MS，或查看服务商是否已返回 4xx/5xx 错误。`)), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 }
@@ -385,6 +430,155 @@ function normalizeIssueCard(issue, index = 0) {
     body: issue.body || "",
   };
 }
+
+function slugifyModuleName(value, fallback = "module") {
+  const textValue = String(value || fallback)
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return textValue || fallback;
+}
+
+function sandboxContractFor(epic, index) {
+  const slug = slugifyModuleName(epic, `module-${index + 1}`);
+  const route = `/sandbox/${slug}`;
+  const apiBase = `/api/sandbox/${slug}`;
+  return {
+    slug,
+    route,
+    api_base: apiBase,
+    mock_data_id: `${slug}-demo-001`,
+    mock_data: {
+      id: `${slug}-demo-001`,
+      title: `${epic}演示数据`,
+      status: "pending_review",
+      owner: "演示用户",
+      updated_at: "2026-05-04T10:00:00.000Z",
+      items: [
+        { label: "待处理", value: 12 },
+        { label: "处理中", value: 5 },
+        { label: "已完成", value: 28 },
+      ],
+    },
+    api_contract: [
+      `GET ${apiBase}/summary -> 返回模块指标、状态分布和最近活动`,
+      `GET ${apiBase}/items?q=&status= -> 返回可筛选列表`,
+      `POST ${apiBase}/items -> 使用 mock schema 创建一条演示记录`,
+      `POST ${apiBase}/items/:id/submit -> 推进到下一状态并返回审计事件`,
+    ],
+    sandbox_tests: [
+      "node --check server.js",
+      "node --check static/app.js",
+      `手动打开 ${route}，确认页面可独立预览`,
+      `调用 GET ${apiBase}/summary，确认返回 mock 数据`,
+    ],
+    manual_checks: [
+      "沙盒页面具备加载态、空状态、失败提示和成功反馈",
+      "列表搜索和状态筛选不会影响其他模块",
+      "主要操作只修改当前模块 mock 数据",
+      "生成代码后可通过 UI 预览或 /preview 链接独立验收",
+    ],
+  };
+}
+
+buildIssueDrafts = function buildSandboxReadyIssueDrafts(epics) {
+  return epics.flatMap((epic, index) => {
+    const sandbox = sandboxContractFor(epic, index);
+    return [
+      {
+        key: `MOD-${index + 1}1`,
+        title: `模块「${epic}」沙盒页面与交互原型`,
+        body: `## 目标\n为「${epic}」建立可独立访问的沙盒页面，先用 mock 数据跑通主要用户路径，方便生成代码后在隔离页面验收。\n\n## 沙盒入口\n- 页面：${sandbox.route}\n- Mock 数据：${sandbox.mock_data_id}\n\n## 交付边界\n只实现当前模块的页面结构、状态、事件处理和 mock 数据，不接真实外部系统。`,
+        labels: ["ai-workflow", "module", "frontend", "sandbox"],
+        issue_type: "Task",
+        priority: index === 0 ? "P1" : "P2",
+        owner: "Frontend Engineer",
+        estimate: "0.5-1 day",
+        affected_files: ["static/index.html", "static/app.js", "static/styles.css"],
+        implementation_steps: [
+          `新增或复用 ${sandbox.route} 沙盒入口`,
+          "定义模块级 view state：loading、empty、ready、error、submitting",
+          "使用 mock_data 渲染指标、列表、详情和主要操作",
+          "为搜索、筛选、提交、重试补齐前端事件",
+          "把沙盒入口接入产品原型和 UI 预览链路",
+        ],
+        acceptance_criteria: [
+          `访问 ${sandbox.route} 可独立看到模块页面`,
+          "无真实 API Key 和外部服务时仍可完成演示",
+          "主要操作会更新 mock 状态并显示反馈",
+          "移动端和桌面端布局不重叠、不溢出",
+        ],
+        test_plan: sandbox.sandbox_tests,
+        risks: ["沙盒 mock 字段后续需要和真实 API schema 对齐"],
+        sandbox,
+      },
+      {
+        key: `MOD-${index + 1}2`,
+        title: `模块「${epic}」Mock API 与测试夹具`,
+        body: `## 目标\n为「${epic}」提供可被前端和自动化测试复用的 Mock API 契约，生成代码后可在无数据库、无外部依赖的情况下完成沙盒测试。\n\n## API 契约\n${sandbox.api_contract.map((item) => `- ${item}`).join("\n")}`,
+        labels: ["ai-workflow", "module", "backend", "mock-api", "sandbox"],
+        issue_type: "Task",
+        priority: "P1",
+        owner: "Backend Engineer",
+        estimate: "0.5-1 day",
+        affected_files: ["server.js"],
+        implementation_steps: [
+          `新增 ${sandbox.api_base} 命名空间下的 mock API`,
+          "把 mock 数据放入内存 fixture，避免依赖真实数据库",
+          "统一返回 success、data、error、request_id 字段",
+          "为失败场景提供可切换 mock，例如 ?mode=error 或 ?mode=empty",
+          "记录最小审计事件，便于后续替换真实服务",
+        ],
+        acceptance_criteria: [
+          `GET ${sandbox.api_base}/summary 返回 200 和结构化 mock 数据`,
+          "empty/error 模式可稳定复现",
+          "前端沙盒页面只依赖当前模块 API 即可运行",
+          "Mock API 字段可直接迁移为真实 API 契约初稿",
+        ],
+        test_plan: sandbox.sandbox_tests,
+        risks: ["Mock API 不应被误认为生产接口，需要在 UI 和响应中标明 sandbox"],
+        sandbox,
+      },
+      {
+        key: `MOD-${index + 1}3`,
+        title: `模块「${epic}」沙盒验收脚本与回归清单`,
+        body: `## 目标\n为「${epic}」建立生成代码后的沙盒验收标准，确保 AI 生成 Patch 可被快速检查、预览、回滚。\n\n## 验收重点\n${sandbox.manual_checks.map((item) => `- ${item}`).join("\n")}`,
+        labels: ["ai-workflow", "module", "qa", "sandbox"],
+        issue_type: "Task",
+        priority: "P2",
+        owner: "QA Engineer",
+        estimate: "0.25-0.5 day",
+        affected_files: ["server.js", "static/app.js", "static/styles.css"],
+        implementation_steps: [
+          "补齐模块级手动验收清单",
+          "确认 UI Preview 可以打开并展示模块页面",
+          "确认 Patch 应用前必须完成前端功能与视觉勾选",
+          "把 sandbox_tests 写入生成代码提示上下文",
+        ],
+        acceptance_criteria: sandbox.manual_checks,
+        test_plan: sandbox.sandbox_tests,
+        risks: ["缺少浏览器自动化环境时，首版以手动验收为准"],
+        sandbox,
+      },
+    ];
+  });
+};
+
+const normalizeIssueCardBase = normalizeIssueCard;
+normalizeIssueCard = function normalizeSandboxReadyIssueCard(issue, index = 0) {
+  const card = normalizeIssueCardBase(issue, index);
+  const sandbox = issue.sandbox || card.sandbox || sandboxContractFor(card.title, index);
+  const labels = [...new Set([...(card.labels || []), ...(issue.sandbox ? ["sandbox"] : [])])];
+  return {
+    ...card,
+    labels,
+    sandbox,
+    test_plan: card.test_plan?.length ? card.test_plan : sandbox.sandbox_tests,
+    manual_checks: issue.manual_checks || card.manual_checks || sandbox.manual_checks,
+    api_contract: issue.api_contract || card.api_contract || sandbox.api_contract,
+    mock_data: issue.mock_data || card.mock_data || sandbox.mock_data,
+  };
+};
 
 function formatIssueCardBody(issue) {
   const card = normalizeIssueCard(issue);
@@ -474,6 +668,88 @@ function artifact(title, content) {
 
 function stage(id, name, owner, summary, artifacts) {
   return { id, name, owner, status: "completed", summary, artifacts };
+}
+
+const AGENT_EMPLOYEE_ROLES = [
+  {
+    id: "requirements-analyst",
+    title: "需求分析师",
+    agent_name: "需求分析师 Agent",
+    responsibility: "澄清客户目标、用户角色、范围边界、约束条件和风险。",
+    deliverables: ["需求澄清文档", "业务目标", "用户角色", "范围边界", "风险清单"],
+    stage_ids: ["business-requirement", "intake"],
+  },
+  {
+    id: "product-manager",
+    title: "产品经理",
+    agent_name: "产品经理 Agent",
+    responsibility: "把业务需求拆成 PRD、页面清单、用户故事、优先级和验收标准。",
+    deliverables: ["PRD", "页面清单", "用户故事", "Backlog", "验收标准"],
+    stage_ids: ["requirement-doc", "product"],
+  },
+  {
+    id: "ui-designer",
+    title: "UI设计师",
+    agent_name: "UI 设计师 Agent",
+    responsibility: "生成视觉风格、设计系统、页面效果图、交互状态和设计理由。",
+    deliverables: ["设计系统", "UI 效果图", "页面视觉方案", "交互状态", "响应式规则"],
+    stage_ids: ["business-ui", "business-prototype"],
+  },
+  {
+    id: "architect",
+    title: "架构师",
+    agent_name: "架构师 Agent",
+    responsibility: "设计系统架构、接口契约、数据模型、部署边界和安全策略。",
+    deliverables: ["架构文档", "API 契约", "数据模型", "技术选型", "安全方案"],
+    stage_ids: ["architecture-doc", "architecture", "parameter-doc"],
+  },
+  {
+    id: "developer",
+    title: "开发人员",
+    agent_name: "开发人员 Agent",
+    responsibility: "把页面方案拆成实现任务、Patch 草案、Mock API 和可沙盒测试的代码路径。",
+    deliverables: ["实施方案", "Patch 草案", "Mock API", "代码生成计划", "沙盒入口"],
+    stage_ids: ["page-implementation", "delivery"],
+  },
+  {
+    id: "tester",
+    title: "测试人员",
+    agent_name: "测试人员 Agent",
+    responsibility: "生成测试计划、验收清单、质量门禁、回归策略和缺陷风险。",
+    deliverables: ["测试计划", "验收清单", "质量报告", "回归清单", "风险说明"],
+    stage_ids: ["quality", "page-implementation"],
+  },
+];
+
+function buildAgentEmployees(workflow = {}) {
+  const stages = workflow.stages || [];
+  return AGENT_EMPLOYEE_ROLES.map((role, index) => {
+    const ownedStages = stages.filter((item) => role.stage_ids.includes(item.id));
+    const primaryStage = ownedStages[0] || null;
+    const artifacts = ownedStages.flatMap((item) =>
+      (item.artifacts || []).map((artifactItem) => ({
+        stage_id: item.id,
+        stage_name: item.name,
+        title: artifactItem.title,
+        kind: artifactItem.kind || "markdown",
+      }))
+    );
+    return {
+      ...role,
+      order: index + 1,
+      status: primaryStage ? "completed" : "pending",
+      current_task: primaryStage?.summary || role.responsibility,
+      outputs: artifacts.length ? artifacts : role.deliverables.map((title) => ({ title, kind: "planned" })),
+      stage_ids: role.stage_ids,
+    };
+  });
+}
+
+function attachAgentEmployees(workflow = {}) {
+  return {
+    ...workflow,
+    agent_employees: buildAgentEmployees(workflow),
+  };
 }
 
 function runDeterministicWorkflow(request) {
@@ -620,6 +896,253 @@ ${bullets([
   };
 }
 
+function inferBusinessPages(request = {}, signals = null) {
+  const text = [
+    request.project_name,
+    request.goal,
+    request.source_material,
+    request.constraints,
+    request.target_users,
+  ].filter(Boolean).join(" ").toLowerCase();
+  const pages = [
+    { id: "requirements-home", name: "业务需求首页", purpose: "录入业务目标、约束、用户角色和原始材料，是整个生成流程的起点。" },
+    { id: "docs-review", name: "文档评审页", purpose: "查看并确认需求文档、参数文档和架构文档。" },
+    { id: "prototype-board", name: "业务原型图页", purpose: "展示业务流程、页面关系和关键操作路径。" },
+    { id: "ui-board", name: "业务 UI 图页", purpose: "展示面向客户评审的业务设计稿和页面视觉布局。" },
+    { id: "implementation-plan", name: "页面实施方案页", purpose: "按页面拆解实现步骤、文件范围、接口契约和验收标准。" },
+    { id: "patch-review", name: "Patch 草案审查页", purpose: "查看代码差异草案、风险说明、测试命令和回滚方案。" },
+    { id: "code-generation", name: "代码生成页", purpose: "根据实施方案和 Patch 草案生成代码改动。" },
+    { id: "sandbox-test", name: "沙盒测试页", purpose: "在 Mock API 和隔离预览环境中验证页面和业务流程。" },
+  ];
+  if (text.includes("审批") || text.includes("approval")) {
+    pages.splice(4, 0, { id: "approval-flow", name: "业务审批页", purpose: "处理提交、退回、通过、审批意见和版本锁定。" });
+  }
+  if (text.includes("报告") || text.includes("pdf") || text.includes("导出")) {
+    pages.splice(5, 0, { id: "report-export", name: "报告导出页", purpose: "预览业务报告、确认版本并导出交付材料。" });
+  }
+  if (text.includes("看板") || text.includes("dashboard")) {
+    pages.splice(2, 0, { id: "business-dashboard", name: "业务看板页", purpose: "展示关键指标、待办事项、风险分布和交付进度。" });
+  }
+  return pages.slice(0, 10);
+}
+
+function pageSandboxContract(page, index) {
+  const slug = slugifyModuleName(page.id || page.name, `page-${index + 1}`);
+  const route = `/sandbox/pages/${slug}`;
+  const apiBase = `/api/sandbox/pages/${slug}`;
+  return {
+    slug,
+    route,
+    api_base: apiBase,
+    mock_data_id: `${slug}-mock-001`,
+    mock_data: {
+      id: `${slug}-mock-001`,
+      page_name: page.name,
+      status: "ready_for_review",
+      primary_action: "确认并进入下一步",
+      secondary_action: "返回修改",
+      records: [
+        { id: "item-1", title: "示例业务记录", status: "待确认" },
+        { id: "item-2", title: "示例生成结果", status: "已生成" },
+      ],
+    },
+    api_contract: [
+      `GET ${apiBase}/state -> 返回页面 mock 状态、表单默认值和列表数据`,
+      `POST ${apiBase}/actions/primary -> 模拟页面主操作并返回下一状态`,
+      `POST ${apiBase}/actions/reset -> 重置当前页面 mock 数据`,
+    ],
+    sandbox_tests: [
+      "node --check server.js",
+      "node --check static/app.js",
+      `手动打开 ${route}`,
+      `调用 GET ${apiBase}/state，确认返回当前页面 mock 数据`,
+    ],
+    manual_checks: [
+      "页面可在无数据库、无外部 API 的情况下独立演示",
+      "加载态、空状态、错误态、成功态都有明确反馈",
+      "主操作只影响当前页面 mock 数据",
+      "页面文案与业务需求、参数文档和架构文档保持一致",
+    ],
+  };
+}
+
+function buildPageIssueDrafts(pages) {
+  return pages.map((page, index) => {
+    const sandbox = pageSandboxContract(page, index);
+    return {
+      key: `PAGE-${String(index + 1).padStart(2, "0")}`,
+      title: `页面「${page.name}」实施方案、Patch、代码生成与沙盒测试`,
+      body: `## 页面目标\n${page.purpose}\n\n## 页面级交付链路\n1. 生成实施方案\n2. 生成 Patch 草案\n3. 生成功能代码\n4. 进入沙盒测试\n5. 通过后再应用到主工作区\n\n## 沙盒入口\n- 页面：${sandbox.route}\n- Mock API：${sandbox.api_base}`,
+      labels: ["ai-workflow", "page", "sandbox", "codegen"],
+      issue_type: "Task",
+      priority: index <= 2 ? "P1" : "P2",
+      owner: index <= 3 ? "Frontend Engineer" : "Full-stack Engineer",
+      estimate: "0.5-1 day",
+      affected_files: ["static/index.html", "static/app.js", "static/styles.css", "server.js"],
+      implementation_steps: [
+        `为「${page.name}」建立 ${sandbox.route} 沙盒入口`,
+        "按页面状态拆分 loading、ready、empty、error、submitting",
+        "接入 mock API 契约，不依赖真实数据库和外部服务",
+        "补齐 UI 图对应的信息层级、主操作和反馈状态",
+        "生成 Patch 草案后先走 UI 预览和沙盒测试，再应用代码",
+      ],
+      acceptance_criteria: [
+        `${sandbox.route} 可独立访问并展示该页面的业务 UI`,
+        "页面主操作能通过 mock 数据完成闭环",
+        "实施方案、Patch 草案、生成代码和沙盒测试链路清晰可追踪",
+        "桌面和移动端布局无重叠、无文字溢出",
+      ],
+      test_plan: sandbox.sandbox_tests,
+      manual_checks: sandbox.manual_checks,
+      sandbox,
+      mock_data: sandbox.mock_data,
+      api_contract: sandbox.api_contract,
+    };
+  });
+}
+
+runDeterministicWorkflow = function runBusinessDesignWorkflow(request) {
+  request = cleanWorkflowInput(request);
+  const signals = extractSignals(request);
+  const pages = inferBusinessPages(request, signals);
+  const issueDrafts = buildPageIssueDrafts(pages);
+  const pageList = pages.map((page, index) => `${index + 1}. ${page.name}：${page.purpose}`).join("\n");
+
+  const stages = [
+    stage("business-requirement", "1. 首页业务需求", "业务分析 Agent", "收集业务目标、目标用户、约束条件和原始材料，作为后续文档与设计图生成的唯一入口。", [
+      artifact("首页业务需求", `
+## 业务目标
+${request.goal}
+
+## 客户与行业
+- 客户：${request.client_name || "待确认客户"}
+- 行业：${request.industry || "待确认行业"}
+- 目标用户：${request.target_users || "待确认用户"}
+
+## 原始材料
+${request.source_material}
+
+## 约束条件
+${request.constraints}
+`),
+    ]),
+    stage("requirement-doc", "2. 生成需求文档", "产品经理 Agent", "把业务需求转成可评审的需求文档，明确范围、角色、流程和验收口径。", [
+      artifact("需求文档", `
+## 产品目标
+${request.goal}
+
+## 核心业务模块
+${bullets(signals.epics)}
+
+## 页面清单
+${pageList}
+
+## 用户故事
+${bullets(signals.stories)}
+
+## 验收原则
+- 每个页面必须有独立沙盒入口。
+- 每个页面必须有 Mock API 和 mock 数据。
+- 每个页面必须可以先预览、再生成 Patch、再生成代码、最后沙盒测试。
+`),
+    ]),
+    stage("parameter-doc", "3. 生成参数文档", "参数建模 Agent", "定义页面参数、Mock API、状态机、输入输出和沙盒测试数据。", [
+      artifact("参数文档", `
+## 页面参数模型
+${pages.map((page, index) => {
+  const sandbox = pageSandboxContract(page, index);
+  return `### ${page.name}
+- route: ${sandbox.route}
+- api_base: ${sandbox.api_base}
+- mock_data_id: ${sandbox.mock_data_id}
+- primary_action: ${sandbox.mock_data.primary_action}`;
+}).join("\n\n")}
+
+## 通用状态
+- loading
+- ready
+- empty
+- error
+- submitting
+- success
+`),
+    ]),
+    stage("architecture-doc", "4. 生成架构文档", "架构师 Agent", "定义从业务需求到文档、原型图、UI 图、页面级代码生成和沙盒测试的架构。", [
+      artifact("架构文档", `
+## 流程架构
+\`\`\`text
+首页业务需求
+  -> 需求文档 / 参数文档 / 架构文档
+  -> 业务原型图
+  -> 业务 UI 图
+  -> 页面级实施方案
+  -> 页面级 Patch 草案
+  -> 代码生成
+  -> 沙盒测试
+\`\`\`
+
+## 技术边界
+- 前端：HTML/CSS/JavaScript 工作台与预览页面
+- 后端：Node.js 本地服务、内存项目状态、Mock API
+- 沙盒：/preview 与 /sandbox 路由隔离验证
+- 代码生成：先生成草案，人工确认后应用
+
+## 推荐技术栈
+${request.tech_stack}
+`),
+    ]),
+    stage("business-prototype", "5. 生成业务原型图", "原型设计 Agent", "生成业务流程、页面关系和核心操作路径，面向需求确认。", [
+      artifact("业务原型图说明", `
+## 原型画板
+${pageList}
+
+## 原型关注点
+- 页面之间的业务流转
+- 每个页面的输入、处理、输出
+- 角色在流程中的责任边界
+- 进入实施前必须确认的业务规则
+`),
+    ]),
+    stage("business-ui", "6. 生成业务 UI 图", "UI 设计 Agent", "生成面向客户评审的业务设计图，突出信息层级、业务操作和状态反馈。", [
+      artifact("业务 UI 图说明", `
+## UI 设计画板
+${pages.map((page) => `- ${page.name}：${page.purpose}`).join("\n")}
+
+## UI 关注点
+- 业务信息优先，不做营销式页面。
+- 每张图必须体现主操作、关键数据、状态反馈和异常入口。
+- UI 图用于客户评审与页面级实施方案拆分。
+`),
+    ]),
+    stage("page-implementation", "7. 按页面生成实施方案 / Patch / 代码 / 沙盒测试", "研发负责人 Agent", "把每个业务页面拆成可生成代码和可沙盒测试的任务卡。", [
+      artifact("页面级实施任务", issueDrafts.map((issue) => `- ${issue.key}：${issue.title}（${issue.sandbox.route}）`).join("\n")),
+    ]),
+  ];
+
+  return {
+    workflow_id: crypto.randomBytes(5).toString("hex"),
+    created_at: new Date().toISOString(),
+    project_name: request.project_name,
+    client_name: request.client_name || "",
+    stages,
+    metrics: {
+      estimated_sprints: Math.max(2, Math.min(6, Math.ceil(pages.length / 2))),
+      epics: signals.epics.length,
+      stories: issueDrafts.length,
+      risks: signals.risks.length,
+      integrations: signals.integrations.length,
+    },
+    backlog_issues: issueDrafts.map(normalizeIssueCard),
+    generation_mode: "deterministic",
+    next_actions: [
+      "先确认首页业务需求字段是否完整。",
+      "评审需求文档、参数文档和架构文档。",
+      "生成并评审业务原型图和业务 UI 图。",
+      "按页面逐个生成实施方案、Patch 草案、代码并进入沙盒测试。",
+    ],
+  };
+};
+
 const AGENT_DEFINITIONS = [
   {
     id: "intake",
@@ -669,7 +1192,7 @@ const AGENT_DEFINITIONS = [
 
 async function callOpenAIJson(prompt) {
   const maxAttempts = Number(process.env.OPENAI_MAX_RETRIES || 3);
-  const requestTimeoutMs = Number(process.env.OPENAI_REQUEST_TIMEOUT_MS || 45000);
+  const requestTimeoutMs = Number(process.env.OPENAI_REQUEST_TIMEOUT_MS || 600000);
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -715,7 +1238,7 @@ async function callOpenAIJson(prompt) {
 
 async function callOpenAIJson(prompt) {
   const maxAttempts = Number(process.env.OPENAI_MAX_RETRIES || 3);
-  const requestTimeoutMs = Number(process.env.OPENAI_REQUEST_TIMEOUT_MS || 45000);
+  const requestTimeoutMs = Number(process.env.OPENAI_REQUEST_TIMEOUT_MS || 600000);
   const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
   let lastError = null;
 
@@ -761,15 +1284,21 @@ async function callOpenAIJson(prompt) {
         if (!isRetryableOpenAIStatus(responsesError.status)) throw responsesError;
       }
 
-      return await requestJson(
-        openAIChatCompletionsUrl(),
-        {
-          model,
-          messages: [{ role: "user", content: prompt }],
-          response_format: { type: "json_object" },
-        },
-        "OpenAI Chat"
-      );
+      try {
+        return await requestJson(
+          openAIChatCompletionsUrl(),
+          {
+            model,
+            messages: [{ role: "user", content: prompt }],
+            response_format: { type: "json_object" },
+          },
+          "OpenAI Chat"
+        );
+      } catch (chatError) {
+        const combined = new Error(`OpenAI Responses failed, Chat fallback also failed. Responses: ${lastError?.message || "unknown"} | Chat: ${chatError.message}`);
+        combined.status = chatError.status || lastError?.status;
+        throw combined;
+      }
     } catch (error) {
       lastError = error;
       if (attempt === maxAttempts) throw lastError;
@@ -887,7 +1416,7 @@ async function generateWithOpenAI(request, fallbackWorkflow) {
 
   const stages = AGENT_DEFINITIONS.map((agent) => stageById[agent.id] || fallbackWorkflow.stages.find((item) => item.id === agent.id));
 
-  return {
+  return attachAgentEmployees({
     ...fallbackWorkflow,
     stages,
     backlog_issues: backlogIssues.map(normalizeIssueCard),
@@ -899,7 +1428,7 @@ async function generateWithOpenAI(request, fallbackWorkflow) {
     generation_mode: "multi_agent",
     model: process.env.OPENAI_MODEL || "gpt-4o-mini",
     agent_team: AGENT_DEFINITIONS.map(({ id, owner }) => ({ id, owner })),
-  };
+  });
 }
 
 async function improveWorkflowInBackground(request, fallback) {
@@ -939,7 +1468,8 @@ async function improveWorkflowInBackground(request, fallback) {
 }
 
 function runWorkflow(request) {
-  const fallback = runDeterministicWorkflow(request);
+  request = cleanWorkflowInput(request);
+  const fallback = attachAgentEmployees(runDeterministicWorkflow(request));
   if (!process.env.OPENAI_API_KEY) return fallback;
   setTimeout(() => improveWorkflowInBackground(request, fallback), 0);
   return {
@@ -1044,9 +1574,209 @@ function findIssueCard(workflow, issueKey) {
   return issue;
 }
 
+function generateLocalImplementationPlan(workflow, issue) {
+  const sandbox = issue.sandbox || {};
+  const files = issue.affected_files?.length ? issue.affected_files : ["server.js", "static/index.html", "static/app.js", "static/styles.css"];
+  return {
+    issue_key: issue.key,
+    title: issue.title,
+    summary: `规则引擎已为「${issue.title}」生成本地实施方案，可先用于人工评审、Patch 草案和沙盒验证。`,
+    change_plan: files.map((file) => ({
+      file,
+      reason: file === "server.js" ? "补齐沙盒路由、Mock API、生成接口或页面状态数据。" : "补齐业务页面结构、交互状态、视觉样式和验证入口。",
+      changes: [
+        "围绕当前任务卡目标做最小可验证改动",
+        "优先使用 mock_data 和 sandbox.api_base，不依赖真实数据库或外部服务",
+        "保留人工确认与回滚入口",
+      ],
+    })),
+    steps: [
+      `确认任务卡范围：${issue.title}`,
+      sandbox.route ? `建立或验证沙盒页面入口：${sandbox.route}` : "确认该页面或模块的沙盒入口",
+      sandbox.api_base ? `建立或验证 Mock API：${sandbox.api_base}` : "确认 Mock API 与页面状态契约",
+      "实现 loading、ready、empty、error、submitting、success 状态",
+      "生成 Patch 草案后先做 UI 预览和沙盒测试，再应用到本地工作区",
+    ],
+    test_commands: issue.test_plan?.length ? issue.test_plan : [
+      "node --check server.js",
+      "node --check static/app.js",
+      sandbox.route ? `手动打开 ${sandbox.route}` : "手动打开相关页面进行沙盒验证",
+    ],
+    acceptance_checks: issue.acceptance_criteria?.length ? issue.acceptance_criteria : [
+      "页面可在无真实外部服务的情况下独立演示",
+      "主操作可以通过 mock 数据完成闭环",
+      "桌面端和移动端无明显重叠、溢出和乱码",
+    ],
+    risks: [
+      "当前未配置 OPENAI_API_KEY，方案由本地规则引擎生成，不包含真实 Agent 的代码上下文推理。",
+      "涉及文件可能需要开发者根据真实代码路径再次确认。",
+    ],
+    rollback_plan: [
+      "不直接应用 Patch 草案，先通过 UI 预览和沙盒测试确认。",
+      "如已应用，可使用生成的反向 Patch 或 git diff 定位并回退相关文件。",
+    ],
+    generated_at: new Date().toISOString(),
+    model: "local-rule-engine",
+    generation_mode: "fallback",
+  };
+}
+
+function generateLocalPatchDraft(workflow, issue, implementationPlan = null) {
+  const sandbox = issue.sandbox || {};
+  return {
+    issue_key: issue.key,
+    title: issue.title,
+    summary: `规则引擎已生成「${issue.title}」的 Patch 草案说明。未启用真实 Agent 时不自动伪造代码 diff，请按实施方案确认后再生成或手写 Patch。`,
+    files: [],
+    test_commands: implementationPlan?.test_commands || issue.test_plan || [
+      "node --check server.js",
+      "node --check static/app.js",
+      sandbox.route ? `手动打开 ${sandbox.route}` : "手动打开相关沙盒页面",
+    ],
+    manual_checks: issue.manual_checks || [
+      "确认页面内容与当前业务需求一致",
+      "确认 Mock API 和沙盒页面可以独立演示",
+      "确认前端功能和视觉效果后再应用真实代码改动",
+    ],
+    assumptions: [
+      "当前环境未配置 OPENAI_API_KEY，因此没有调用真实代码 Agent。",
+      "本地规则引擎只输出可评审草案，不伪造未知代码上下文的 diff。",
+    ],
+    risks: [
+      "没有真实 Agent 时，Patch 需要开发者或后续代码 Agent 基于真实文件内容生成。",
+      "如果直接进入应用 Patch，会因为没有 diff 文件而被阻止，这是预期保护。",
+    ],
+    rollback_plan: implementationPlan?.rollback_plan || [
+      "Patch 未应用前无需回滚。",
+      "如后续手动应用代码，使用 git diff 审查并按文件回退。",
+    ],
+    patch_quality: {
+      valid: false,
+      file_reports: [],
+      reason: "local-rule-engine 未生成 unified diff",
+    },
+    generated_at: new Date().toISOString(),
+    model: "local-rule-engine",
+    status: "plan_only",
+    generation_mode: "fallback",
+  };
+}
+
+function localPatchLines(lines) {
+  return lines.map((line) => `+${String(line).replace(/\r/g, "")}`).join("\n");
+}
+
+function localPatchMarkdown(workflow = {}, issue = {}, implementationPlan = null) {
+  const sandbox = issue.sandbox || {};
+  const plan = implementationPlan || {};
+  const list = (items = []) => (items.length ? items.map((item) => `- ${item}`) : ["- 待补充"]);
+  return [
+    `# ${issue.key || "PAGE"} ${issue.title || "页面实施任务"}`,
+    "",
+    "## 项目信息",
+    `- 项目：${workflow.project_name || "未命名项目"}`,
+    `- 客户：${workflow.client_name || "未填写客户"}`,
+    `- 生成模式：local-rule-engine`,
+    "",
+    "## 页面目标",
+    issue.sandbox?.mock_data?.primary_action || issue.body?.split(/\r?\n/).find((line) => line && !line.startsWith("#")) || issue.title || "按当前业务需求完成页面级交付。",
+    "",
+    "## 沙盒入口",
+    `- 页面：${sandbox.route || "待生成"}`,
+    `- Mock API：${sandbox.api_base || "待生成"}`,
+    `- Mock 数据：${sandbox.mock_data_id || "待生成"}`,
+    "",
+    "## 建议涉及文件",
+    ...list(issue.affected_files || plan.change_plan?.map((item) => item.file).filter(Boolean) || []),
+    "",
+    "## 实施步骤",
+    ...list(plan.steps || issue.implementation_steps || []),
+    "",
+    "## 测试命令",
+    ...list(plan.test_commands || issue.test_plan || ["node --check server.js", "node --check static/app.js"]),
+    "",
+    "## 人工验收",
+    ...list(issue.manual_checks || plan.acceptance_checks || issue.acceptance_criteria || []),
+    "",
+    "## 风险与回滚",
+    ...list(plan.risks || ["本地规则引擎生成的是最小可应用 Patch，真实代码实现仍需结合代码上下文确认。"]),
+    ...list(plan.rollback_plan || ["应用前先预览 diff；如不符合预期，使用撤销 Patch 或 git diff 回退。"]),
+    "",
+  ];
+}
+
+function buildAddFilePatch(filePath, lines) {
+  return [
+    `diff --git a/${filePath} b/${filePath}`,
+    "new file mode 100644",
+    "index 0000000..1111111",
+    "--- /dev/null",
+    `+++ b/${filePath}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    localPatchLines(lines),
+    "",
+  ].join("\n");
+}
+
+generateLocalPatchDraft = function generateApplicableLocalPatchDraft(workflow, issue, implementationPlan = null) {
+  const sandbox = issue.sandbox || {};
+  const slug = slugifyModuleName(issue.key || issue.title || "page-task", "page-task");
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const filePath = `generated/page-plans/${slug}-${stamp}.md`;
+  const markdownLines = localPatchMarkdown(workflow, issue, implementationPlan);
+  const patch = buildAddFilePatch(filePath, markdownLines);
+  const patchDraft = {
+    issue_key: issue.key,
+    title: issue.title,
+    summary: `本地规则引擎已生成可应用 Patch：新增「${issue.title}」页面实施说明文件，作为后续代码生成和沙盒测试的落地依据。`,
+    files: [
+      {
+        path: filePath,
+        purpose: "新增页面级实施说明，记录业务目标、沙盒入口、Mock API、实施步骤和验收项。",
+        patch,
+      },
+    ],
+    test_commands: implementationPlan?.test_commands || issue.test_plan || [
+      "node --check server.js",
+      "node --check static/app.js",
+      sandbox.route ? `手动打开 ${sandbox.route}` : "手动打开相关沙盒页面",
+    ],
+    manual_checks: issue.manual_checks || [
+      "确认新增说明文件与当前业务页面一致",
+      "确认沙盒页面和 Mock API 路径可用于后续实现",
+      "确认后续真实代码 Patch 以该说明文件为实施依据",
+    ],
+    assumptions: [
+      "当前环境未配置 OPENAI_API_KEY，因此由本地规则引擎生成保守可应用 Patch。",
+      "该 Patch 只新增文档型交付文件，不直接修改运行时代码。",
+    ],
+    risks: [
+      "该 Patch 不是完整功能代码实现，只是页面级实施落地说明。",
+      "完整页面代码仍需真实 Agent 或开发者基于代码上下文继续生成。",
+    ],
+    rollback_plan: implementationPlan?.rollback_plan || [
+      `删除 ${filePath}`,
+      "或使用系统的撤销 Patch 功能反向应用该 diff。",
+    ],
+    generated_at: new Date().toISOString(),
+    model: "local-rule-engine",
+    status: "draft_only",
+    generation_mode: "fallback",
+  };
+  return {
+    ...patchDraft,
+    patch_quality: patchQualityReport(patchDraft),
+  };
+};
+
 async function generateImplementationPlan(workflow, issueKey) {
-  if (!process.env.OPENAI_API_KEY) throw new Error("未启用真实 Agent，无法生成代码实施方案。");
   const issue = findIssueCard(workflow, issueKey);
+  if (!process.env.OPENAI_API_KEY) {
+    return {
+      issue,
+      plan: generateLocalImplementationPlan(workflow, issue),
+    };
+  }
   const prompt = `
 你是资深软件工程负责人。请基于下面的实施任务卡，生成一份“代码自动化实施方案”。
 
@@ -1055,6 +1785,8 @@ async function generateImplementationPlan(workflow, issueKey) {
 - 不要声称已经修改代码。
 - 方案必须适合交给代码 Agent 或开发者执行。
 - 如果任务卡的涉及文件只是推测，请在 risks 中说明需要先确认真实代码路径。
+- 如果任务卡包含 sandbox，请优先围绕 sandbox.route、sandbox.api_base、mock_data 和 sandbox_tests 设计可独立验收的实现方案。
+- 每个方案必须说明如何在无真实外部服务、无真实数据库的情况下完成沙盒验证。
 
 JSON 字段：
 {
@@ -1100,8 +1832,13 @@ ${JSON.stringify({
 }
 
 async function generatePatchDraft(workflow, issueKey, implementationPlan = null) {
-  if (!process.env.OPENAI_API_KEY) throw new Error("未启用真实 Agent，无法生成 patch 草案。");
   const issue = findIssueCard(workflow, issueKey);
+  if (!process.env.OPENAI_API_KEY) {
+    return {
+      issue,
+      patch: generateLocalPatchDraft(workflow, issue, implementationPlan),
+    };
+  }
   const prompt = `
 你是资深代码生成 Agent。请基于任务卡和实施方案，生成“patch 草案”。
 
@@ -1111,6 +1848,8 @@ async function generatePatchDraft(workflow, issueKey, implementationPlan = null)
 - diff 必须尽量使用 unified diff 风格。
 - 如果缺少真实代码上下文，请生成保守 patch 草案，并在 assumptions/risks 中说明需要人工确认。
 - 不要发明密钥、真实外部账号或不可验证的配置。
+- 如果任务卡包含 sandbox，请优先生成可在 sandbox.route 独立预览、可通过 mock API 或内存 fixture 测试的最小代码。
+- test_commands 和 manual_checks 必须包含沙盒页面、mock API、UI 预览或手动验收路径。
 
 JSON 字段：
 {
@@ -1327,6 +2066,1102 @@ function createUiPreview(patchDraft) {
   };
 }
 
+function inferPrototypeScreens(workflow = {}) {
+  const text = [
+    workflow.project_name,
+    workflow.client_name,
+    ...(workflow.stages || []).flatMap((stage) => [
+      stage.name,
+      stage.summary,
+      ...(stage.artifacts || []).map((artifact) => artifact.content),
+    ]),
+    ...(workflow.backlog_issues || []).flatMap((issue) => [issue.title, issue.body, ...(issue.labels || [])]),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  const screens = [
+    { id: "dashboard", name: "工作台首页", desc: "集中展示关键指标、待处理事项和最近活动。" },
+    { id: "list", name: "业务列表", desc: "支持搜索、筛选、状态查看和批量操作。" },
+    { id: "detail", name: "详情页", desc: "承载对象信息、处理记录、协作备注和下一步动作。" },
+  ];
+  const add = (id, name, desc, keys) => {
+    if (screens.some((item) => item.id === id)) return;
+    if (keys.some((key) => text.includes(key))) screens.push({ id, name, desc });
+  };
+
+  add("auth", "登录与权限", "提供账号登录、角色选择和权限提示。", ["登录", "login", "auth", "权限", "角色"]);
+  add("upload", "文件上传", "支持文件拖拽、元数据录入、解析状态和失败重试。", ["上传", "file", "pdf", "文档", "合同"]);
+  add("ai", "AI 分析页", "展示 AI 处理进度、推理结果、引用依据和人工确认入口。", ["ai", "agent", "rag", "问答", "风险", "智能"]);
+  add("approval", "审批流程", "覆盖提交审批、退回、通过、意见留痕和版本锁定。", ["审批", "审核", "approval", "复核"]);
+  add("report", "报告与导出", "展示报告预览、编辑、版本记录和 PDF/Markdown 导出。", ["报告", "导出", "pdf", "export"]);
+  add("settings", "系统配置", "管理知识库、成员、集成配置和审计日志。", ["配置", "知识库", "审计", "jira", "github", "集成"]);
+  return screens.slice(0, 8);
+}
+
+function buildPrototypeHtml(workflow = {}) {
+  const projectName = workflow.project_name || "AI 交付项目";
+  const clientName = workflow.client_name || "客户";
+  const screens = inferPrototypeScreens(workflow);
+  const issues = (workflow.backlog_issues || []).slice(0, 6).map(normalizeIssueCard);
+  const metrics = workflow.metrics || {};
+  const primaryScreen = screens[0] || { name: "工作台首页", desc: "核心业务入口" };
+  const stageNames = (workflow.stages || []).map((stage) => stage.name).slice(0, 6);
+
+  const screenNav = screens
+    .map((screen, index) => `<button class="${index === 0 ? "active" : ""}" data-screen="${screen.id}">${screen.name}</button>`)
+    .join("");
+  const screenSections = screens
+    .map(
+      (screen, index) => `
+        <section class="screen ${index === 0 ? "active" : ""}" id="screen-${screen.id}">
+          <div class="screen-title">
+            <div>
+              <p>${screen.name}</p>
+              <h2>${screen.desc}</h2>
+            </div>
+            <button>主要操作</button>
+          </div>
+          <div class="screen-grid">
+            <div class="canvas-card wide">
+              <div class="card-head"><strong>${screen.name}流程</strong><span>Prototype</span></div>
+              <div class="flow-row">
+                ${["输入", "处理", "确认", "交付"].map((item) => `<div><b>${item}</b><small>${screen.name}</small></div>`).join("")}
+              </div>
+            </div>
+            <div class="canvas-card">
+              <div class="card-head"><strong>关键状态</strong><span>State</span></div>
+              <ul>
+                <li>待处理</li>
+                <li>处理中</li>
+                <li>需人工确认</li>
+                <li>已完成</li>
+              </ul>
+            </div>
+            <div class="canvas-card">
+              <div class="card-head"><strong>用户动作</strong><span>Action</span></div>
+              <button>新增</button>
+              <button class="ghost">查看详情</button>
+              <button class="ghost">提交下一步</button>
+            </div>
+          </div>
+        </section>
+      `
+    )
+    .join("");
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(projectName)} - 产品原型</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f6f7f4; color: #17201b; font-family: Inter, "Segoe UI", Arial, sans-serif; }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 248px minmax(0, 1fr); }
+    aside { background: #10231f; color: white; padding: 22px; display: grid; align-content: start; gap: 22px; }
+    .brand { display: flex; gap: 10px; align-items: center; }
+    .mark { width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center; background: #15a08f; font-weight: 800; }
+    h1, h2, p { margin: 0; }
+    aside h1 { font-size: 18px; line-height: 1.2; }
+    aside p { color: #a8c4bc; font-size: 13px; margin-top: 4px; }
+    nav { display: grid; gap: 8px; }
+    nav button { background: transparent; border: 1px solid rgba(255,255,255,.12); color: #d8e9e4; border-radius: 6px; padding: 10px; text-align: left; cursor: pointer; font: inherit; }
+    nav button.active, nav button:hover { background: #1f4f48; border-color: #3fbfaf; color: white; }
+    main { padding: 24px; display: grid; gap: 18px; }
+    .topbar, .hero, .screen, .canvas-card { background: white; border: 1px solid #d7ddd4; border-radius: 8px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; }
+    .search { width: min(420px, 48vw); border: 1px solid #d7ddd4; border-radius: 6px; padding: 10px 12px; color: #65706a; background: #fbfcfa; }
+    .hero { padding: 22px; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 18px; }
+    .hero h2 { font-size: 30px; margin: 6px 0 10px; letter-spacing: 0; }
+    .hero p, .muted { color: #65706a; line-height: 1.5; }
+    .kpis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .kpi { border: 1px solid #d7ddd4; border-radius: 6px; padding: 12px; background: #fbfcfa; }
+    .kpi b { display: block; color: #0f766e; font-size: 24px; }
+    .screen { display: none; padding: 18px; }
+    .screen.active { display: grid; gap: 16px; }
+    .screen-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .screen-title p { color: #0f766e; font-weight: 800; font-size: 13px; }
+    .screen-title h2 { font-size: 22px; margin-top: 4px; }
+    button, .button { border: 0; border-radius: 6px; background: #0f766e; color: white; padding: 10px 12px; font-weight: 750; cursor: pointer; }
+    button.ghost { background: #eef7f5; color: #115e59; }
+    .screen-grid { display: grid; grid-template-columns: 1.2fr .8fr; gap: 12px; }
+    .canvas-card { padding: 14px; display: grid; gap: 12px; }
+    .canvas-card.wide { grid-column: 1 / -1; }
+    .card-head { display: flex; justify-content: space-between; color: #65706a; font-size: 13px; }
+    .card-head strong { color: #17201b; font-size: 15px; }
+    .flow-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .flow-row div { background: #eef7f5; border: 1px solid #c8ded7; border-radius: 6px; padding: 12px; display: grid; gap: 4px; }
+    .flow-row small, li { color: #65706a; }
+    ul { margin: 0; padding-left: 18px; line-height: 1.8; }
+    .tasks { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+    .task { border: 1px solid #d7ddd4; background: #fbfcfa; border-radius: 6px; padding: 12px; }
+    .task small { color: #65706a; display: block; margin-top: 6px; }
+    @media (max-width: 900px) { .app { grid-template-columns: 1fr; } aside { position: static; } .hero, .screen-grid { grid-template-columns: 1fr; } .search { width: 100%; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="brand"><span class="mark">AI</span><div><h1>${escapeHtml(projectName)}</h1><p>${escapeHtml(clientName)}</p></div></div>
+      <nav>${screenNav}</nav>
+    </aside>
+    <main>
+      <header class="topbar">
+        <strong>产品原型演示</strong>
+        <div class="search">搜索页面、任务或客户资料</div>
+      </header>
+      <section class="hero">
+        <div>
+          <p class="muted">根据项目需求、PRD、Backlog 和交付约束自动生成</p>
+          <h2>${escapeHtml(projectName)} 产品原型</h2>
+          <p>${escapeHtml(primaryScreen.desc)} 当前原型聚焦页面结构、核心流程、关键状态和研发可交付范围，可用于客户评审与前端任务拆分。</p>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><b>${escapeHtml(metrics.epics || stageNames.length || screens.length)}</b><span>业务模块</span></div>
+          <div class="kpi"><b>${escapeHtml(metrics.stories || issues.length)}</b><span>用户故事</span></div>
+          <div class="kpi"><b>${escapeHtml(metrics.estimated_sprints || 4)}</b><span>预计迭代</span></div>
+          <div class="kpi"><b>${escapeHtml(screens.length)}</b><span>原型页面</span></div>
+        </div>
+      </section>
+      ${screenSections}
+      <section class="canvas-card">
+        <div class="card-head"><strong>研发任务映射</strong><span>Backlog</span></div>
+        <div class="tasks">
+          ${issues.map((issue) => `<div class="task"><b>${escapeHtml(issue.title)}</b><small>${escapeHtml((issue.labels || []).join(", "))}</small></div>`).join("")}
+        </div>
+      </section>
+    </main>
+  </div>
+  <script>
+    const buttons = Array.from(document.querySelectorAll("nav button"));
+    const screens = Array.from(document.querySelectorAll(".screen"));
+    buttons.forEach((button) => {
+      button.addEventListener("click", () => {
+        buttons.forEach((item) => item.classList.remove("active"));
+        screens.forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        document.getElementById("screen-" + button.dataset.screen)?.classList.add("active");
+      });
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function generateProductPrototype(workflow) {
+  if (!workflow) throw new Error("请先运行工作流，再生成产品原型。");
+  const previewId = `prototype_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  const previewDir = path.join(previewRoot, previewId);
+  fs.mkdirSync(previewDir, { recursive: true });
+  fs.writeFileSync(path.join(previewDir, "index.html"), buildPrototypeHtml(workflow), "utf8");
+  const screens = inferPrototypeScreens(workflow).map((screen) => screen.name);
+  return {
+    prototype_id: previewId,
+    preview_url: `/preview/${previewId}/`,
+    title: `${workflow.project_name || "项目"} 产品原型`,
+    summary: "已根据当前项目需求、工作流阶段产物和 Backlog 自动生成可点击产品原型。",
+    screens,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+function extractBusinessPageName(issue = {}, index = 0) {
+  const title = String(issue.title || "");
+  const quoted = title.match(/页面[「《](.*?)[」》]/);
+  if (quoted?.[1]) return quoted[1].trim();
+  const mockName = issue.sandbox?.mock_data?.page_name || issue.mock_data?.page_name;
+  if (mockName) return String(mockName).trim();
+  const fallback = title
+    .replace(/^PAGE-\d+\s*/i, "")
+    .replace(/实施方案|Patch|代码生成|沙盒测试|页面|、|，|,/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return fallback || `业务页面 ${String(index + 1).padStart(2, "0")}`;
+}
+
+function getStageArtifactContent(workflow = {}, stageId = "") {
+  const stageItem = (workflow.stages || []).find((stage) => stage.id === stageId);
+  return (stageItem?.artifacts || [])
+    .map((artifact) => artifact.content || artifact.title || "")
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function buildBusinessPrototypePages(workflow = {}) {
+  const pageIssues = (workflow.backlog_issues || [])
+    .map(normalizeIssueCard)
+    .filter((issue) => String(issue.key || "").startsWith("PAGE-"));
+
+  if (pageIssues.length) {
+    return pageIssues.slice(0, 10).map((issue, index) => ({
+      id: issue.sandbox?.slug || slugifyModuleName(issue.key || `page-${index + 1}`, `page-${index + 1}`),
+      name: extractBusinessPageName(issue, index),
+      purpose: issue.sandbox?.mock_data?.primary_action || issue.body?.split(/\r?\n/).find(Boolean) || "承载当前业务流程中的页面级交付、确认与验证。",
+      route: issue.sandbox?.route || `/sandbox/pages/${slugifyModuleName(issue.key || `page-${index + 1}`, `page-${index + 1}`)}`,
+      apiBase: issue.sandbox?.api_base || "",
+      checks: (issue.manual_checks || issue.sandbox?.manual_checks || []).slice(0, 3),
+      labels: issue.labels || [],
+    }));
+  }
+
+  return inferBusinessPages({
+    project_name: workflow.project_name,
+    goal: workflow.request?.goal || workflow.goal,
+    source_material: workflow.request?.source_material || workflow.source_material,
+    constraints: workflow.request?.constraints || workflow.constraints,
+    target_users: workflow.request?.target_users || workflow.target_users,
+  }).map((page, index) => ({
+    id: page.id || `page-${index + 1}`,
+    name: page.name,
+    purpose: page.purpose,
+    route: `/sandbox/pages/${slugifyModuleName(page.id || page.name, `page-${index + 1}`)}`,
+    apiBase: `/api/sandbox/pages/${slugifyModuleName(page.id || page.name, `page-${index + 1}`)}`,
+    checks: ["页面内容与当前业务需求一致", "关键操作路径可以被人工确认", "沙盒数据可独立演示"],
+    labels: ["business", "prototype"],
+  }));
+}
+
+inferPrototypeScreens = function inferBusinessPrototypeScreens(workflow = {}) {
+  return buildBusinessPrototypePages(workflow).map((page) => ({
+    id: page.id,
+    name: page.name,
+    desc: page.purpose,
+  }));
+};
+
+buildPrototypeHtml = function buildBusinessSpecificPrototypeHtml(workflow = {}) {
+  const projectName = workflow.project_name || "业务交付项目";
+  const clientName = workflow.client_name || "客户";
+  const pages = buildBusinessPrototypePages(workflow);
+  const metrics = workflow.metrics || {};
+  const requirementDoc = getStageArtifactContent(workflow, "requirement-doc");
+  const parameterDoc = getStageArtifactContent(workflow, "parameter-doc");
+  const architectureDoc = getStageArtifactContent(workflow, "architecture-doc");
+  const docCards = [
+    ["需求文档", requirementDoc || "待生成需求文档"],
+    ["参数文档", parameterDoc || "待生成参数文档"],
+    ["架构文档", architectureDoc || "待生成架构文档"],
+  ];
+
+  const nav = pages
+    .map((page, index) => `<button class="${index === 0 ? "active" : ""}" data-screen="${escapeHtml(page.id)}">${escapeHtml(page.name)}</button>`)
+    .join("");
+
+  const pageSections = pages
+    .map((page, index) => {
+      const checks = page.checks.length ? page.checks : ["业务信息完整", "操作路径清晰", "可进入沙盒验证"];
+      return `
+        <section class="screen ${index === 0 ? "active" : ""}" id="screen-${escapeHtml(page.id)}">
+          <div class="screen-title">
+            <div>
+              <p>业务原型页面 ${String(index + 1).padStart(2, "0")}</p>
+              <h2>${escapeHtml(page.name)}</h2>
+            </div>
+            <span>${escapeHtml(page.route)}</span>
+          </div>
+          <div class="prototype-board">
+            <div class="lane">
+              <strong>业务输入</strong>
+              <p>${escapeHtml(page.purpose)}</p>
+              <small>来源：当前业务需求、需求文档、参数文档和架构文档</small>
+            </div>
+            <div class="lane">
+              <strong>页面处理</strong>
+              <p>展示页面主流程、状态反馈、Mock 数据和当前页面需要确认的业务信息。</p>
+              <small>${escapeHtml(page.apiBase || "Mock API 待生成")}</small>
+            </div>
+            <div class="lane">
+              <strong>人工确认</strong>
+              <p>产品经理、业务负责人或测试工程师在本页确认内容后，再进入实施方案、Patch 草案和代码生成。</p>
+              <small>${escapeHtml((page.labels || []).join(" / ") || "business / prototype")}</small>
+            </div>
+            <div class="lane">
+              <strong>沙盒验证</strong>
+              <p>通过独立沙盒路由访问页面，验证空状态、加载态、成功态、错误态和主操作闭环。</p>
+              <small>${escapeHtml(page.route)}</small>
+            </div>
+          </div>
+          <div class="wireframe">
+            <aside>
+              <b>${escapeHtml(projectName)}</b>
+              ${pages.slice(0, 7).map((item) => `<span class="${item.id === page.id ? "current" : ""}">${escapeHtml(item.name)}</span>`).join("")}
+            </aside>
+            <main>
+              <header>
+                <div>
+                  <small>${escapeHtml(clientName)}</small>
+                  <h3>${escapeHtml(page.name)}</h3>
+                </div>
+                <button>确认并进入下一步</button>
+              </header>
+              <div class="content-grid">
+                <div class="panel wide">
+                  <b>当前业务材料</b>
+                  <p>${escapeHtml(page.purpose)}</p>
+                </div>
+                <div class="panel"><b>待确认</b><strong>3</strong><span>业务项</span></div>
+                <div class="panel"><b>已生成</b><strong>${index + 1}</strong><span>页面方案</span></div>
+                <div class="panel wide">
+                  <b>验收检查</b>
+                  <ul>${checks.map((check) => `<li>${escapeHtml(check)}</li>`).join("")}</ul>
+                </div>
+              </div>
+            </main>
+          </div>
+        </section>
+      `;
+    })
+    .join("");
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(projectName)} - 业务原型图</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f7f7f2; color: #18211d; font-family: Inter, "Segoe UI", Arial, sans-serif; }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 270px minmax(0, 1fr); }
+    aside.nav { background: #16332c; color: #fff; padding: 22px; display: grid; align-content: start; gap: 18px; }
+    h1, h2, h3, p { margin: 0; }
+    .brand h1 { font-size: 18px; line-height: 1.25; }
+    .brand p, .muted, small { color: #66746d; line-height: 1.5; }
+    aside.nav .brand p { color: #b5cec5; margin-top: 4px; }
+    nav { display: grid; gap: 8px; }
+    nav button { width: 100%; border: 1px solid rgba(255,255,255,.14); background: transparent; color: #e2f0ec; border-radius: 6px; padding: 10px; text-align: left; cursor: pointer; font: inherit; }
+    nav button.active, nav button:hover { background: #226256; border-color: #42c5ad; color: #fff; }
+    main.app-main { padding: 22px; display: grid; gap: 16px; }
+    .topbar, .hero, .screen, .doc-card { background: #fff; border: 1px solid #d9dfd4; border-radius: 8px; }
+    .topbar { padding: 14px 16px; display: flex; justify-content: space-between; gap: 14px; align-items: center; }
+    .search { min-width: 280px; max-width: 440px; width: 38vw; border: 1px solid #d9dfd4; background: #fafbf8; border-radius: 6px; padding: 10px 12px; color: #66746d; }
+    .hero { padding: 22px; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; }
+    .hero h2 { margin-top: 6px; font-size: 30px; letter-spacing: 0; }
+    .flow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .flow div, .doc-card, .lane, .panel { border: 1px solid #d9dfd4; background: #fbfcf9; border-radius: 6px; padding: 12px; }
+    .flow b { display: block; color: #0f766e; font-size: 22px; }
+    .docs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .doc-card p { margin-top: 8px; color: #66746d; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-line; }
+    .screen { display: none; padding: 18px; gap: 14px; }
+    .screen.active { display: grid; }
+    .screen-title { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+    .screen-title p { color: #0f766e; font-weight: 800; font-size: 13px; }
+    .screen-title h2 { margin-top: 4px; font-size: 23px; }
+    .screen-title span { color: #0f766e; background: #eef8f5; border-radius: 6px; padding: 8px 10px; font-size: 13px; }
+    .prototype-board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .lane strong { display: block; margin-bottom: 8px; }
+    .lane p { color: #52615a; line-height: 1.55; min-height: 74px; }
+    .wireframe { min-height: 390px; border: 1px solid #d9dfd4; border-radius: 8px; overflow: hidden; display: grid; grid-template-columns: 210px minmax(0, 1fr); background: #fff; }
+    .wireframe aside { background: #eef4ef; padding: 16px; display: grid; align-content: start; gap: 9px; }
+    .wireframe aside span { border-radius: 6px; padding: 9px; color: #51625a; }
+    .wireframe aside span.current { background: #0f766e; color: #fff; }
+    .wireframe main { padding: 18px; display: grid; align-content: start; gap: 14px; }
+    .wireframe header { display: flex; justify-content: space-between; gap: 14px; align-items: center; }
+    button { border: 0; border-radius: 6px; background: #0f766e; color: #fff; padding: 10px 12px; font-weight: 750; cursor: pointer; }
+    .content-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .panel.wide { grid-column: 1 / -1; }
+    .panel strong { display: block; margin-top: 8px; font-size: 28px; color: #0f766e; }
+    .panel p, .panel li, .panel span { color: #52615a; line-height: 1.55; }
+    ul { margin: 8px 0 0; padding-left: 18px; }
+    @media (max-width: 980px) { .app, .hero, .wireframe { grid-template-columns: 1fr; } .docs, .prototype-board, .content-grid { grid-template-columns: 1fr; } .search { width: 100%; min-width: 0; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="nav">
+      <div class="brand">
+        <h1>${escapeHtml(projectName)}</h1>
+        <p>${escapeHtml(clientName)} · 业务原型图</p>
+      </div>
+      <nav>${nav}</nav>
+    </aside>
+    <main class="app-main">
+      <header class="topbar">
+        <strong>根据当前业务需求生成，不使用通用模板</strong>
+        <div class="search">搜索业务页面、沙盒路由、实施任务</div>
+      </header>
+      <section class="hero">
+        <div>
+          <p class="muted">首页业务需求 → 文档生成 → 业务原型图 → 业务 UI 图 → 页面实施方案 → Patch 草案 → 代码生成 → 沙盒测试</p>
+          <h2>${escapeHtml(projectName)} 业务原型图</h2>
+          <p class="muted">本原型直接绑定当前工作流中的页面任务，每个页面都带业务输入、处理路径、人工确认点、Mock API 和沙盒验证入口。</p>
+        </div>
+        <div class="flow">
+          <div><b>${escapeHtml(pages.length)}</b><span>业务页面</span></div>
+          <div><b>${escapeHtml(metrics.stories || pages.length)}</b><span>页面任务</span></div>
+          <div><b>${escapeHtml(metrics.estimated_sprints || 4)}</b><span>交付迭代</span></div>
+          <div><b>PAGE</b><span>按页面生成</span></div>
+        </div>
+      </section>
+      <section class="docs">
+        ${docCards.map(([title, content]) => `<div class="doc-card"><strong>${escapeHtml(title)}</strong><p>${escapeHtml(content)}</p></div>`).join("")}
+      </section>
+      ${pageSections}
+    </main>
+  </div>
+  <script>
+    const buttons = Array.from(document.querySelectorAll("nav button"));
+    const screens = Array.from(document.querySelectorAll(".screen"));
+    buttons.forEach((button) => {
+      button.addEventListener("click", () => {
+        buttons.forEach((item) => item.classList.remove("active"));
+        screens.forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        document.getElementById("screen-" + button.dataset.screen)?.classList.add("active");
+      });
+    });
+  </script>
+</body>
+</html>`;
+};
+
+function buildBusinessUiHtml(workflow = {}) {
+  const projectName = workflow.project_name || "业务系统";
+  const clientName = workflow.client_name || "客户";
+  const pages = (workflow.backlog_issues || [])
+    .map(normalizeIssueCard)
+    .filter((issue) => issue.key?.startsWith("PAGE-"))
+    .slice(0, 8)
+    .map((issue) => ({
+      name: issue.title.replace(/^页面「|」实施方案.*$/g, "") || issue.title,
+      purpose: issue.sandbox?.mock_data?.primary_action || "确认并进入下一步",
+      route: issue.sandbox?.route || "",
+    }));
+  const boards = pages.length ? pages : inferBusinessPages({ project_name: projectName });
+  const boardCards = boards.map((page, index) => `
+    <section class="board ${index === 0 ? "wide" : ""}">
+      <div class="board-top">
+        <div>
+          <p>业务 UI 图 ${String(index + 1).padStart(2, "0")}</p>
+          <h2>${escapeHtml(page.name)}</h2>
+        </div>
+        <span>${escapeHtml(page.route || "Business Board")}</span>
+      </div>
+      <div class="mock-window">
+        <header>
+          <b>${escapeHtml(page.name)}</b>
+          <div><i></i><i></i><i></i></div>
+        </header>
+        <main>
+          <aside>
+            <strong>${escapeHtml(projectName)}</strong>
+            <span class="active">当前页面</span>
+            <span>业务数据</span>
+            <span>审批与交付</span>
+            <span>系统配置</span>
+          </aside>
+          <section>
+            <div class="hero-line">
+              <div>
+                <small>${escapeHtml(clientName)}</small>
+                <h3>${escapeHtml(page.name)}</h3>
+                <p>${escapeHtml(page.purpose || "围绕业务需求展示关键数据、主操作和状态反馈。")}</p>
+              </div>
+              <button>主操作</button>
+            </div>
+            <div class="stats">
+              <div><b>12</b><span>待处理</span></div>
+              <div><b>5</b><span>需复核</span></div>
+              <div><b>28</b><span>已完成</span></div>
+            </div>
+            <div class="table">
+              <div><b>业务对象</b><b>状态</b><b>负责人</b></div>
+              <div><span>示例业务记录</span><span>待确认</span><span>产品经理</span></div>
+              <div><span>生成结果</span><span>已生成</span><span>交付经理</span></div>
+              <div><span>沙盒测试</span><span>进行中</span><span>测试工程师</span></div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </section>
+  `).join("");
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(projectName)} - 业务 UI 图</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #eef2ef; color: #17201b; font-family: Inter, "Segoe UI", Arial, sans-serif; }
+    .wrap { max-width: 1440px; margin: 0 auto; padding: 28px; display: grid; gap: 18px; }
+    .cover, .board { background: #fff; border: 1px solid #d7ddd4; border-radius: 8px; box-shadow: 0 18px 45px rgba(22, 33, 27, .08); }
+    .cover { padding: 28px; display: flex; justify-content: space-between; gap: 24px; align-items: flex-end; }
+    .cover p, .board-top p, small { color: #65706a; margin: 0; }
+    h1, h2, h3 { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 34px; margin-top: 6px; }
+    .tag { background: #0f766e; color: white; border-radius: 999px; padding: 8px 12px; font-weight: 800; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .board { padding: 18px; display: grid; gap: 14px; }
+    .board.wide { grid-column: 1 / -1; }
+    .board-top { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+    .board-top h2 { font-size: 22px; margin-top: 4px; }
+    .board-top span { color: #0f766e; font-size: 12px; font-weight: 800; background: #eef7f5; border-radius: 999px; padding: 6px 9px; }
+    .mock-window { border: 1px solid #d7ddd4; border-radius: 8px; overflow: hidden; background: #fbfcfa; }
+    .mock-window > header { height: 44px; display: flex; justify-content: space-between; align-items: center; padding: 0 14px; border-bottom: 1px solid #d7ddd4; background: #fff; }
+    .mock-window i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #c8ded7; margin-left: 5px; }
+    .mock-window main { display: grid; grid-template-columns: 170px minmax(0, 1fr); min-height: 360px; }
+    aside { background: #10231f; color: white; padding: 16px; display: grid; align-content: start; gap: 10px; }
+    aside span { color: #a8c4bc; padding: 8px 9px; border-radius: 6px; }
+    aside span.active { background: #1f4f48; color: white; }
+    section section { padding: 18px; display: grid; gap: 14px; }
+    .hero-line { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
+    .hero-line h3 { font-size: 24px; margin: 5px 0; }
+    .hero-line p { color: #65706a; margin: 0; line-height: 1.5; }
+    button { border: 0; background: #0f766e; color: white; border-radius: 6px; padding: 10px 13px; font-weight: 800; }
+    .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .stats div { background: #eef7f5; border: 1px solid #c8ded7; border-radius: 6px; padding: 12px; }
+    .stats b { display: block; color: #0f766e; font-size: 24px; }
+    .stats span, .table span { color: #65706a; }
+    .table { border: 1px solid #d7ddd4; border-radius: 6px; overflow: hidden; }
+    .table div { display: grid; grid-template-columns: 1.4fr .8fr .8fr; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #d7ddd4; background: #fff; }
+    .table div:first-child { background: #f4f7f5; }
+    .table div:last-child { border-bottom: 0; }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } .board.wide { grid-column: auto; } .mock-window main { grid-template-columns: 1fr; } aside { display: none; } .cover { align-items: flex-start; flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="cover">
+      <div>
+        <p>业务评审设计稿</p>
+        <h1>${escapeHtml(projectName)}业务 UI 图</h1>
+        <p>${escapeHtml(clientName)} / 从业务需求到页面级沙盒测试</p>
+      </div>
+      <span class="tag">${boards.length} 张业务图</span>
+    </header>
+    <main class="grid">${boardCards}</main>
+  </div>
+</body>
+</html>`;
+}
+
+function generateBusinessUiBoards(workflow) {
+  if (!workflow) throw new Error("请先运行工作流，再生成业务 UI 图。");
+  const previewId = `businessui_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  const previewDir = path.join(previewRoot, previewId);
+  fs.mkdirSync(previewDir, { recursive: true });
+  fs.writeFileSync(path.join(previewDir, "index.html"), buildBusinessUiHtml(workflow), "utf8");
+  const boards = (workflow.backlog_issues || [])
+    .map(normalizeIssueCard)
+    .filter((issue) => issue.key?.startsWith("PAGE-"))
+    .slice(0, 8)
+    .map((issue) => issue.title.replace(/^页面「|」实施方案.*$/g, ""));
+  return {
+    preview_id: previewId,
+    preview_url: `/preview/${previewId}/`,
+    title: `${workflow.project_name || "项目"}业务 UI 图`,
+    summary: "已根据业务需求、页面清单和页面级沙盒任务生成业务评审设计稿。",
+    boards,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+const BUSINESS_UI_STYLE_PRESETS = {
+  "enterprise-saas": {
+    label: "企业级 SaaS",
+    description: "克制、高信息密度，适合 CRM、项目管理和审批工作台。",
+    bg: "#f4f6f8",
+    panel: "#ffffff",
+    panelSoft: "#f8fafc",
+    ink: "#172033",
+    muted: "#667085",
+    line: "#d7dde6",
+    accent: "#2563eb",
+    accentDark: "#1d4ed8",
+    accentSoft: "#eaf1ff",
+    sidebar: "#111827",
+    sidebarMuted: "#aeb8c8",
+    shadow: "0 18px 44px rgba(15, 23, 42, .10)",
+    radius: "8px",
+    coverLayout: "split",
+  },
+  "legal-finance": {
+    label: "金融法务专业",
+    description: "稳重、强审计感，适合合同、风控、合规和金融后台。",
+    bg: "#f6f3ee",
+    panel: "#fffdf8",
+    panelSoft: "#fbf7ef",
+    ink: "#1f2528",
+    muted: "#6f6a5f",
+    line: "#ded4c4",
+    accent: "#7c2d12",
+    accentDark: "#5f220d",
+    accentSoft: "#fff1e7",
+    sidebar: "#201915",
+    sidebarMuted: "#d1c4b5",
+    shadow: "0 20px 46px rgba(49, 36, 23, .11)",
+    radius: "6px",
+    coverLayout: "compact",
+  },
+  "ai-product": {
+    label: "科技产品",
+    description: "现代、清晰、有数据平台感，适合 AI、数据和研发工具。",
+    bg: "#f2f7fb",
+    panel: "#ffffff",
+    panelSoft: "#f4fbff",
+    ink: "#0d1b2a",
+    muted: "#52677a",
+    line: "#cfe0ea",
+    accent: "#0891b2",
+    accentDark: "#0e7490",
+    accentSoft: "#e6f8fb",
+    sidebar: "#082f49",
+    sidebarMuted: "#aad4e6",
+    shadow: "0 18px 48px rgba(8, 47, 73, .12)",
+    radius: "8px",
+    coverLayout: "metrics",
+  },
+  "minimal-premium": {
+    label: "极简高端",
+    description: "留白更充分，强调客户演示、咨询交付和精致排版。",
+    bg: "#f7f7f4",
+    panel: "#ffffff",
+    panelSoft: "#fbfbf8",
+    ink: "#171717",
+    muted: "#70706a",
+    line: "#deded7",
+    accent: "#111111",
+    accentDark: "#000000",
+    accentSoft: "#f0f0ec",
+    sidebar: "#171717",
+    sidebarMuted: "#c8c8c0",
+    shadow: "0 20px 54px rgba(17, 17, 17, .08)",
+    radius: "4px",
+    coverLayout: "editorial",
+  },
+  "ops-console": {
+    label: "运营后台",
+    description: "接近真实生产后台，突出筛选、表格、状态和重复操作效率。",
+    bg: "#f3f5f2",
+    panel: "#ffffff",
+    panelSoft: "#f7faf6",
+    ink: "#162018",
+    muted: "#607064",
+    line: "#d5dfd2",
+    accent: "#15803d",
+    accentDark: "#166534",
+    accentSoft: "#eaf7ed",
+    sidebar: "#102016",
+    sidebarMuted: "#b7cfbd",
+    shadow: "0 16px 38px rgba(20, 83, 45, .10)",
+    radius: "7px",
+    coverLayout: "ops",
+  },
+};
+
+function resolveBusinessUiStyle(styleKey = "") {
+  const key = String(styleKey || "").trim();
+  const preset = BUSINESS_UI_STYLE_PRESETS[key] || BUSINESS_UI_STYLE_PRESETS["enterprise-saas"];
+  return {
+    key: BUSINESS_UI_STYLE_PRESETS[key] ? key : "enterprise-saas",
+    ...preset,
+  };
+}
+
+function businessUiPageName(issue = {}) {
+  const title = issue.title || "";
+  return (
+    title.match(/页面[「《](.*?)[」》]/)?.[1] ||
+    issue.sandbox?.mock_data?.page_name ||
+    title.replace(/^PAGE-\d+\s*/i, "").replace(/实施方案|Patch|代码生成|沙盒测试|页面|、|，|,/g, " ").replace(/\s+/g, " ").trim() ||
+    issue.key ||
+    "业务页面"
+  );
+}
+
+function buildBusinessUiStyleCss(style) {
+  return `
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: ${style.bg};
+      color: ${style.ink};
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+    }
+    .wrap { max-width: 1480px; margin: 0 auto; padding: 28px; display: grid; gap: 18px; }
+    .cover, .board { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; box-shadow: ${style.shadow}; }
+    .cover { padding: 28px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 22px; align-items: end; }
+    .cover.compact { border-top: 5px solid ${style.accent}; }
+    .cover.editorial { align-items: start; padding: 34px; }
+    .cover.metrics .cover-metrics, .cover.ops .cover-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .cover p, .board-top p, small { color: ${style.muted}; margin: 0; }
+    h1, h2, h3 { margin: 0; letter-spacing: 0; }
+    h1 { font-size: 34px; line-height: 1.15; margin-top: 6px; }
+    .tag, .chip { background: ${style.accentSoft}; color: ${style.accentDark}; border: 1px solid ${style.line}; border-radius: 999px; padding: 7px 10px; font-size: 12px; font-weight: 900; }
+    .style-note { color: ${style.muted}; line-height: 1.55; max-width: 680px; margin-top: 8px; }
+    .cover-metrics { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    .cover-metrics div { min-width: 96px; background: ${style.panelSoft}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 10px; }
+    .cover-metrics b { display: block; color: ${style.accentDark}; font-size: 20px; }
+    .cover-metrics span { color: ${style.muted}; font-size: 11px; font-weight: 800; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .board { padding: 18px; display: grid; gap: 14px; }
+    .board.wide { grid-column: 1 / -1; }
+    .board-top { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+    .board-top h2 { font-size: 22px; line-height: 1.25; margin-top: 4px; }
+    .board-top span { color: ${style.accentDark}; font-size: 12px; font-weight: 900; background: ${style.accentSoft}; border-radius: 999px; padding: 6px 9px; overflow-wrap: anywhere; }
+    .mock-window { border: 1px solid ${style.line}; border-radius: ${style.radius}; overflow: hidden; background: ${style.panelSoft}; }
+    .mock-window > header { height: 44px; display: flex; justify-content: space-between; align-items: center; padding: 0 14px; border-bottom: 1px solid ${style.line}; background: ${style.panel}; }
+    .mock-window i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: ${style.accent}; opacity: .45; margin-left: 5px; }
+    .mock-window main { display: grid; grid-template-columns: 176px minmax(0, 1fr); min-height: 372px; }
+    aside { background: ${style.sidebar}; color: white; padding: 16px; display: grid; align-content: start; gap: 10px; }
+    aside strong { line-height: 1.35; }
+    aside span { color: ${style.sidebarMuted}; padding: 8px 9px; border-radius: ${style.radius}; font-size: 13px; }
+    aside span.active { background: rgba(255,255,255,.12); color: white; }
+    section section { padding: 18px; display: grid; gap: 14px; }
+    .hero-line { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }
+    .hero-line h3 { font-size: 24px; line-height: 1.2; margin: 5px 0; }
+    .hero-line p { color: ${style.muted}; margin: 0; line-height: 1.5; }
+    button { border: 0; background: ${style.accent}; color: white; border-radius: ${style.radius}; padding: 10px 13px; font-weight: 900; }
+    .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .stats div { background: ${style.accentSoft}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 12px; }
+    .stats b { display: block; color: ${style.accentDark}; font-size: 24px; }
+    .stats span, .table span { color: ${style.muted}; }
+    .table { border: 1px solid ${style.line}; border-radius: ${style.radius}; overflow: hidden; }
+    .table div { display: grid; grid-template-columns: 1.4fr .8fr .8fr; gap: 8px; padding: 10px 12px; border-bottom: 1px solid ${style.line}; background: ${style.panel}; }
+    .table div:first-child { background: ${style.panelSoft}; color: ${style.ink}; }
+    .table div:last-child { border-bottom: 0; }
+    @media (max-width: 900px) {
+      .wrap { padding: 18px; }
+      .cover, .grid { grid-template-columns: 1fr; }
+      .board.wide { grid-column: auto; }
+      .mock-window main { grid-template-columns: 1fr; }
+      aside { display: none; }
+      .hero-line { flex-direction: column; }
+      .cover-metrics { justify-content: flex-start; }
+    }
+  `;
+}
+
+buildBusinessUiHtml = function buildStyledBusinessUiHtml(workflow = {}, styleKey = "enterprise-saas") {
+  const style = resolveBusinessUiStyle(styleKey);
+  const projectName = workflow.project_name || "业务系统";
+  const clientName = workflow.client_name || "客户";
+  const pages = (workflow.backlog_issues || [])
+    .map(normalizeIssueCard)
+    .filter((issue) => issue.key?.startsWith("PAGE-"))
+    .slice(0, 8)
+    .map((issue) => ({
+      name: businessUiPageName(issue),
+      purpose: issue.sandbox?.mock_data?.primary_action || "围绕业务需求展示关键数据、主操作和状态反馈。",
+      route: issue.sandbox?.route || "",
+    }));
+  const boards = pages.length ? pages : inferBusinessPages({ project_name: projectName });
+  const coverClass = `cover ${style.coverLayout}`;
+  const boardCards = boards.map((page, index) => `
+    <section class="board ${index === 0 ? "wide" : ""}">
+      <div class="board-top">
+        <div>
+          <p>业务 UI 图 ${String(index + 1).padStart(2, "0")}</p>
+          <h2>${escapeHtml(page.name)}</h2>
+        </div>
+        <span>${escapeHtml(page.route || "Business Board")}</span>
+      </div>
+      <div class="mock-window">
+        <header>
+          <b>${escapeHtml(page.name)}</b>
+          <div><i></i><i></i><i></i></div>
+        </header>
+        <main>
+          <aside>
+            <strong>${escapeHtml(projectName)}</strong>
+            <span class="active">当前页面</span>
+            <span>业务数据</span>
+            <span>审批与交付</span>
+            <span>系统配置</span>
+          </aside>
+          <section>
+            <div class="hero-line">
+              <div>
+                <small>${escapeHtml(clientName)}</small>
+                <h3>${escapeHtml(page.name)}</h3>
+                <p>${escapeHtml(page.purpose || "围绕业务需求展示关键数据、主操作和状态反馈。")}</p>
+              </div>
+              <button>主操作</button>
+            </div>
+            <div class="stats">
+              <div><b>12</b><span>待处理</span></div>
+              <div><b>5</b><span>需复核</span></div>
+              <div><b>28</b><span>已完成</span></div>
+            </div>
+            <div class="table">
+              <div><b>业务对象</b><b>状态</b><b>负责人</b></div>
+              <div><span>示例业务记录</span><span>待确认</span><span>产品经理</span></div>
+              <div><span>生成结果</span><span>已生成</span><span>交付经理</span></div>
+              <div><span>沙盒测试</span><span>进行中</span><span>测试工程师</span></div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </section>
+  `).join("");
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(projectName)} - ${escapeHtml(style.label)}业务 UI 图</title>
+  <style>${buildBusinessUiStyleCss(style)}</style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="${coverClass}">
+      <div>
+        <span class="chip">${escapeHtml(style.label)}</span>
+        <h1>${escapeHtml(projectName)}业务 UI 图</h1>
+        <p class="style-note">${escapeHtml(clientName)} / ${escapeHtml(style.description)}</p>
+      </div>
+      <div class="cover-metrics">
+        <div><b>${boards.length}</b><span>业务图</span></div>
+        <div><b>PAGE</b><span>页面级生成</span></div>
+        <div><b>Mock</b><span>沙盒验证</span></div>
+      </div>
+    </header>
+    <main class="grid">${boardCards}</main>
+  </div>
+</body>
+</html>`;
+};
+
+generateBusinessUiBoards = function generateStyledBusinessUiBoards(workflow, styleKey = "enterprise-saas") {
+  if (!workflow) throw new Error("请先运行工作流，再生成业务 UI 图。");
+  const style = resolveBusinessUiStyle(styleKey);
+  const previewId = `businessui_${style.key}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  const previewDir = path.join(previewRoot, previewId);
+  fs.mkdirSync(previewDir, { recursive: true });
+  fs.writeFileSync(path.join(previewDir, "index.html"), buildBusinessUiHtml(workflow, style.key), "utf8");
+  const boards = (workflow.backlog_issues || [])
+    .map(normalizeIssueCard)
+    .filter((issue) => issue.key?.startsWith("PAGE-"))
+    .slice(0, 8)
+    .map(businessUiPageName);
+  return {
+    preview_id: previewId,
+    preview_url: `/preview/${previewId}/`,
+    title: `${workflow.project_name || "项目"}业务 UI 图`,
+    summary: `已使用「${style.label}」生成专业业务 UI 设计稿，可继续切换风格重新生成。`,
+    style_key: style.key,
+    style_label: style.label,
+    style_description: style.description,
+    available_styles: Object.entries(BUSINESS_UI_STYLE_PRESETS).map(([key, value]) => ({ key, label: value.label })),
+    boards,
+    generated_at: new Date().toISOString(),
+  };
+};
+
+function buildUiDesignerConcept(workflow = {}, styleKey = "enterprise-saas") {
+  const style = resolveBusinessUiStyle(styleKey);
+  const pages = (workflow.backlog_issues || [])
+    .map(normalizeIssueCard)
+    .filter((issue) => issue.key?.startsWith("PAGE-"))
+    .slice(0, 6)
+    .map((issue, index) => ({
+      id: issue.key || `PAGE-${String(index + 1).padStart(2, "0")}`,
+      name: businessUiPageName(issue),
+      purpose: issue.body?.split(/\r?\n/).find((line) => line && !line.startsWith("#")) || "支撑核心业务流程的页面。",
+      route: issue.sandbox?.route || "",
+      layout: index === 0 ? "工作台总览" : index % 2 ? "表单与审批流" : "列表与详情分栏",
+    }));
+  const screens = pages.length ? pages : inferBusinessPages({ project_name: workflow.project_name }).slice(0, 6).map((page, index) => ({
+    id: `PAGE-${String(index + 1).padStart(2, "0")}`,
+    name: page.name,
+    purpose: page.purpose,
+    route: `/sandbox/pages/${page.id}`,
+    layout: index === 0 ? "工作台总览" : "业务页面",
+  }));
+  const designSystem = {
+    name: `${style.label} Design System`,
+    tokens: {
+      background: style.bg,
+      surface: style.panel,
+      surface_soft: style.panelSoft,
+      text: style.ink,
+      muted: style.muted,
+      line: style.line,
+      accent: style.accent,
+      accent_dark: style.accentDark,
+      accent_soft: style.accentSoft,
+      sidebar: style.sidebar,
+      radius: style.radius,
+      shadow: style.shadow,
+      font: 'Inter, "Segoe UI", Arial, sans-serif',
+    },
+    typography: [
+      { name: "页面标题", size: "28-34px", weight: 800, usage: "页面主标题和设计画板标题" },
+      { name: "区块标题", size: "18-22px", weight: 800, usage: "卡片、表格和详情区标题" },
+      { name: "正文", size: "14px", weight: 500, usage: "说明、表格和表单辅助信息" },
+      { name: "状态标签", size: "12px", weight: 900, usage: "审批状态、优先级和路由标签" },
+    ],
+    components: [
+      { name: "侧边导航", intent: "稳定承载页面切换和业务模块分组" },
+      { name: "指标卡片", intent: "展示待办、风险、完成量等高频判断指标" },
+      { name: "数据表格", intent: "支撑筛选、比较、批量处理和审计追踪" },
+      { name: "审批操作条", intent: "集中呈现提交、退回、确认和下一步动作" },
+      { name: "状态标签", intent: "用颜色和文案明确业务进度与风险" },
+      { name: "详情抽屉", intent: "在不离开列表的情况下查看上下文和处理记录" },
+    ],
+  };
+  return {
+    agent: "UI 设计师 Agent",
+    style_key: style.key,
+    style_label: style.label,
+    style_description: style.description,
+    design_system: designSystem,
+    screen_concepts: screens.map((screen, index) => ({
+      ...screen,
+      visual_focus: index === 0 ? "突出项目全局状态、关键路径和下一步动作。" : "突出当前页面的输入、状态反馈和业务对象处理。",
+      primary_components: index === 0 ? ["侧边导航", "指标卡片", "任务流", "风险摘要"] : ["页面标题", "状态标签", "数据表格", "审批操作条"],
+      acceptance_notes: ["桌面和移动端不重叠", "主操作始终可见", "状态、风险和负责人可快速扫描"],
+    })),
+    rationale: [
+      `采用「${style.label}」是因为当前项目需要在业务评审时同时呈现专业度、可读性和可落地性。`,
+      "信息架构优先保证页面级实施任务、Mock API 和沙盒测试入口可被快速识别。",
+      "视觉系统避免营销式表达，强调真实业务系统中的导航、表格、状态、审批和审计场景。",
+    ],
+  };
+}
+
+function buildUiDesignerPreviewHtml(workflow = {}, concept = {}) {
+  const style = resolveBusinessUiStyle(concept.style_key);
+  const projectName = workflow.project_name || "AI 交付项目";
+  const screens = concept.screen_concepts || [];
+  const tokens = concept.design_system?.tokens || {};
+  const componentCards = (concept.design_system?.components || []).map((component) => `
+    <div class="component-card">
+      <b>${escapeHtml(component.name)}</b>
+      <p>${escapeHtml(component.intent)}</p>
+    </div>
+  `).join("");
+  const screenCards = screens.map((screen, index) => `
+    <section class="screen-card ${index === 0 ? "wide" : ""}">
+      <div class="screen-copy">
+        <span>${escapeHtml(screen.id)}</span>
+        <h2>${escapeHtml(screen.name)}</h2>
+        <p>${escapeHtml(screen.visual_focus || screen.purpose)}</p>
+      </div>
+      <div class="screen-mock">
+        <aside>
+          <strong>${escapeHtml(projectName)}</strong>
+          <i class="active">${escapeHtml(screen.name)}</i>
+          <i>业务数据</i>
+          <i>审批记录</i>
+          <i>沙盒测试</i>
+        </aside>
+        <main>
+          <header>
+            <div>
+              <small>${escapeHtml(screen.layout)}</small>
+              <h3>${escapeHtml(screen.name)}</h3>
+            </div>
+            <button>确认下一步</button>
+          </header>
+          <div class="mock-grid">
+            <div><b>12</b><span>待处理</span></div>
+            <div><b>5</b><span>需复核</span></div>
+            <div><b>28</b><span>已完成</span></div>
+          </div>
+          <div class="mock-table">
+            <div><b>业务对象</b><b>状态</b><b>负责人</b></div>
+            <div><span>示例记录</span><span>待确认</span><span>产品经理</span></div>
+            <div><span>生成产物</span><span>已生成</span><span>交付经理</span></div>
+            <div><span>沙盒验证</span><span>进行中</span><span>测试工程师</span></div>
+          </div>
+        </main>
+      </div>
+    </section>
+  `).join("");
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(projectName)} - UI 设计师 Agent 效果图</title>
+  <style>
+    ${buildBusinessUiStyleCss(style)}
+    .designer-hero { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; box-shadow: ${style.shadow}; padding: 30px; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; align-items: end; }
+    .designer-hero h1 { font-size: 36px; }
+    .designer-hero p { color: ${style.muted}; line-height: 1.65; margin: 8px 0 0; }
+    .token-board, .component-board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .token-board div, .component-card { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 13px; }
+    .token-board span { display: block; color: ${style.muted}; font-size: 12px; font-weight: 800; }
+    .token-board b, .component-card b { color: ${style.accentDark}; }
+    .component-card p { color: ${style.muted}; line-height: 1.5; margin: 6px 0 0; }
+    .screen-card { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; box-shadow: ${style.shadow}; padding: 18px; display: grid; gap: 14px; }
+    .screen-card.wide { grid-column: 1 / -1; }
+    .screen-copy span { color: ${style.accentDark}; font-size: 12px; font-weight: 900; }
+    .screen-copy p { color: ${style.muted}; line-height: 1.55; margin-top: 6px; }
+    .screen-mock { border: 1px solid ${style.line}; border-radius: ${style.radius}; overflow: hidden; display: grid; grid-template-columns: 170px minmax(0, 1fr); min-height: 340px; background: ${style.panelSoft}; }
+    .screen-mock aside { background: ${style.sidebar}; color: white; padding: 16px; display: grid; align-content: start; gap: 10px; }
+    .screen-mock aside i { color: ${style.sidebarMuted}; font-style: normal; border-radius: ${style.radius}; padding: 8px; }
+    .screen-mock aside i.active { background: rgba(255,255,255,.13); color: white; }
+    .screen-mock main { padding: 16px; display: grid; gap: 14px; align-content: start; }
+    .screen-mock header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .screen-mock small { color: ${style.muted}; }
+    .mock-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .mock-grid div { background: ${style.accentSoft}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 12px; }
+    .mock-grid b { display: block; color: ${style.accentDark}; font-size: 23px; }
+    .mock-grid span, .mock-table span { color: ${style.muted}; }
+    .mock-table { border: 1px solid ${style.line}; border-radius: ${style.radius}; overflow: hidden; }
+    .mock-table div { display: grid; grid-template-columns: 1.4fr .8fr .8fr; gap: 8px; padding: 10px 12px; border-bottom: 1px solid ${style.line}; background: ${style.panel}; }
+    .mock-table div:first-child { background: ${style.panelSoft}; }
+    .rationale { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 18px; }
+    .rationale li { color: ${style.muted}; line-height: 1.6; margin: 6px 0; }
+    @media (max-width: 900px) {
+      .designer-hero, .token-board, .component-board, .screen-mock { grid-template-columns: 1fr; }
+      .screen-card.wide { grid-column: auto; }
+      .screen-mock aside { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="designer-hero">
+      <div>
+        <span class="chip">UI 设计师 Agent / ${escapeHtml(concept.style_label)}</span>
+        <h1>${escapeHtml(projectName)}视觉效果图</h1>
+        <p>${escapeHtml(concept.style_description || "")}</p>
+      </div>
+      <div class="token-board">
+        <div><span>主色</span><b>${escapeHtml(tokens.accent || style.accent)}</b></div>
+        <div><span>圆角</span><b>${escapeHtml(tokens.radius || style.radius)}</b></div>
+        <div><span>页面数</span><b>${screens.length}</b></div>
+      </div>
+    </section>
+    <section class="component-board">${componentCards}</section>
+    <main class="grid">${screenCards}</main>
+    <section class="rationale">
+      <h2>设计理由</h2>
+      <ul>${(concept.rationale || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    </section>
+  </div>
+</body>
+</html>`;
+}
+
+function generateUiDesignerConcept(workflow, styleKey = "enterprise-saas") {
+  if (!workflow) throw new Error("请先运行工作流，再让 UI 设计师 Agent 生成效果图。");
+  const concept = buildUiDesignerConcept(workflow, styleKey);
+  const previewId = `uidesigner_${concept.style_key}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  const previewDir = path.join(previewRoot, previewId);
+  fs.mkdirSync(previewDir, { recursive: true });
+  fs.writeFileSync(path.join(previewDir, "index.html"), buildUiDesignerPreviewHtml(workflow, concept), "utf8");
+  return {
+    ...concept,
+    preview_id: previewId,
+    preview_url: `/preview/${previewId}/`,
+    title: `${workflow.project_name || "项目"} UI 视觉设计方案`,
+    summary: "UI 设计师 Agent 已生成设计系统、页面视觉方案、设计理由和可打开的效果图预览。",
+    generated_at: new Date().toISOString(),
+  };
+}
+
 function runGit(args) {
   return spawnSync("git", args, {
     cwd: __dirname,
@@ -1476,12 +3311,117 @@ function exportMarkdown(workflow) {
   return `${lines.join("\n").trim()}\n`;
 }
 
+function findSandboxIssueBySlug(slug = "") {
+  const workflow = managedProjects.find((project) => project.id === activeProjectId)?.latest_workflow || lastRun;
+  const issues = (workflow?.backlog_issues || []).map(normalizeIssueCard);
+  const issue = issues.find((item) => item.sandbox?.slug === slug || item.sandbox?.route === `/sandbox/pages/${slug}`);
+  return { workflow, issue };
+}
+
+function sandboxState(slug = "") {
+  const { workflow, issue } = findSandboxIssueBySlug(slug);
+  const sandbox = issue?.sandbox || pageSandboxContract({ id: slug, name: slug || "沙盒页面" }, 0);
+  return {
+    sandbox: true,
+    project_name: workflow?.project_name || "",
+    issue_key: issue?.key || "",
+    route: sandbox.route || `/sandbox/pages/${slug}`,
+    api_base: sandbox.api_base || `/api/sandbox/pages/${slug}`,
+    data: issue?.mock_data || sandbox.mock_data || {},
+  };
+}
+
+function sandboxPageHtml(slug = "") {
+  const { workflow, issue } = findSandboxIssueBySlug(slug);
+  const sandbox = issue?.sandbox || {};
+  const mock = issue?.mock_data || sandbox.mock_data || {};
+  const records = Array.isArray(mock.records) ? mock.records : [];
+  const pageName = mock.page_name || issue?.title?.match(/页面[「《](.*?)[」》]/)?.[1] || slug || "沙盒页面";
+  const purpose = sandbox.mock_data?.primary_action || issue?.body?.split(/\r?\n/).find((line) => line && !line.startsWith("#")) || "用于验证当前业务页面的状态、数据和主操作。";
+  const projectName = workflow?.project_name || "AI 交付项目";
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(pageName)} - 沙盒测试</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f5f6f3; color: #17201b; font-family: Inter, "Segoe UI", Arial, sans-serif; }
+    .shell { min-height: 100vh; display: grid; grid-template-columns: 240px minmax(0, 1fr); }
+    aside { background: #16332c; color: white; padding: 22px; display: grid; align-content: start; gap: 16px; }
+    h1, h2, p { margin: 0; }
+    aside h1 { font-size: 18px; line-height: 1.25; }
+    aside p { color: #b5cec5; font-size: 13px; line-height: 1.5; }
+    aside a { color: white; text-decoration: none; border: 1px solid rgba(255,255,255,.16); border-radius: 7px; padding: 10px; }
+    main { padding: 24px; display: grid; gap: 16px; align-content: start; }
+    .hero, .card { background: #fff; border: 1px solid #d9dfd4; border-radius: 8px; }
+    .hero { padding: 22px; display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
+    .hero p { color: #64716b; line-height: 1.6; margin-top: 8px; }
+    .tag { color: #115e59; background: #e7f4f1; border-radius: 999px; padding: 7px 10px; font-size: 12px; font-weight: 800; display: inline-block; margin-bottom: 8px; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .card { padding: 16px; display: grid; gap: 10px; }
+    .card b { color: #115e59; }
+    .card p, li, code { color: #64716b; line-height: 1.55; }
+    code { overflow-wrap: anywhere; }
+    button { border: 0; border-radius: 7px; background: #0f766e; color: white; cursor: pointer; font-weight: 800; padding: 10px 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #d9dfd4; padding: 10px; text-align: left; font-size: 14px; }
+    th { color: #303a34; background: #fafbf8; }
+    @media (max-width: 900px) { .shell, .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div><h1>${escapeHtml(projectName)}</h1><p>页面级沙盒测试环境</p></div>
+      <a href="/">返回工作台</a>
+      <a href="${escapeHtml(sandbox.api_base || `/api/sandbox/pages/${slug}`)}/state" target="_blank">查看 Mock API</a>
+    </aside>
+    <main>
+      <section class="hero">
+        <div>
+          <span class="tag">${escapeHtml(issue?.key || "SANDBOX")}</span>
+          <h2>${escapeHtml(pageName)}</h2>
+          <p>${escapeHtml(purpose)}</p>
+        </div>
+        <button id="primaryAction">${escapeHtml(mock.primary_action || "确认并进入下一步")}</button>
+      </section>
+      <section class="grid">
+        <div class="card"><b>页面状态</b><p id="statusText">${escapeHtml(mock.status || "ready_for_review")}</p></div>
+        <div class="card"><b>沙盒路由</b><code>${escapeHtml(sandbox.route || `/sandbox/pages/${slug}`)}</code></div>
+        <div class="card"><b>Mock API</b><code>${escapeHtml(sandbox.api_base || `/api/sandbox/pages/${slug}`)}</code></div>
+      </section>
+      <section class="card">
+        <b>业务记录</b>
+        <table>
+          <thead><tr><th>ID</th><th>标题</th><th>状态</th></tr></thead>
+          <tbody>${(records.length ? records : [{ id: "item-1", title: "示例业务记录", status: "待确认" }]).map((record) => `<tr><td>${escapeHtml(record.id)}</td><td>${escapeHtml(record.title)}</td><td>${escapeHtml(record.status)}</td></tr>`).join("")}</tbody>
+        </table>
+      </section>
+      <section class="card">
+        <b>人工验收</b>
+        <ul>${(issue?.manual_checks || sandbox.manual_checks || ["页面可独立访问", "Mock API 可返回当前页面数据", "主操作有反馈"]).slice(0, 6).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      </section>
+    </main>
+  </div>
+  <script>
+    document.getElementById("primaryAction").addEventListener("click", async () => {
+      const response = await fetch("${escapeHtml(sandbox.api_base || `/api/sandbox/pages/${slug}`)}/actions/primary", { method: "POST" });
+      const data = await response.json();
+      document.getElementById("statusText").textContent = data.data?.status || "success";
+    });
+  </script>
+</body>
+</html>`;
+}
+
 function serveStatic(req, res) {
   if (req.url.startsWith("/preview/")) {
     const parts = req.url.split("?")[0].split("/").filter(Boolean);
     const previewId = parts[1] || "";
-    const rest = parts.slice(2).join("/") || "static/index.html";
-    if (!/^ui_[A-Za-z0-9_-]+$/.test(previewId)) {
+    const rest = parts.slice(2).join("/") || "index.html";
+    if (!/^(ui|prototype|businessui|uidesigner)_[A-Za-z0-9_-]+$/.test(previewId)) {
       text(res, 403, "禁止访问");
       return;
     }
@@ -1543,6 +3483,35 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, workflowStatus);
       return;
     }
+    if (req.method === "GET" && req.url.startsWith("/sandbox/pages/")) {
+      const slug = decodeURIComponent(req.url.split("?")[0].split("/").filter(Boolean)[2] || "");
+      html(res, 200, sandboxPageHtml(slug));
+      return;
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/sandbox/pages/") && req.url.endsWith("/state")) {
+      const parts = req.url.split("?")[0].split("/").filter(Boolean);
+      json(res, 200, sandboxState(decodeURIComponent(parts[3] || "")));
+      return;
+    }
+    if (req.method === "POST" && req.url.startsWith("/api/sandbox/pages/") && req.url.endsWith("/actions/primary")) {
+      const parts = req.url.split("?")[0].split("/").filter(Boolean);
+      const state = sandboxState(decodeURIComponent(parts[3] || ""));
+      json(res, 200, {
+        ...state,
+        data: {
+          ...(state.data || {}),
+          status: "success",
+          updated_at: new Date().toISOString(),
+        },
+        message: "沙盒主操作已模拟完成",
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url.startsWith("/api/sandbox/pages/") && req.url.endsWith("/actions/reset")) {
+      const parts = req.url.split("?")[0].split("/").filter(Boolean);
+      json(res, 200, sandboxState(decodeURIComponent(parts[3] || "")));
+      return;
+    }
     if (req.method === "GET" && req.url === "/api/projects") {
       json(res, 200, {
         active_project_id: activeProjectId,
@@ -1551,7 +3520,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/projects") {
-      const body = await readBody(req);
+      const body = cleanWorkflowInput(await readBody(req));
       const project = createManagedProject(body);
       json(res, 200, {
         active_project_id: activeProjectId,
@@ -1577,7 +3546,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/workflows/run") {
-      const body = await readBody(req);
+      const body = cleanWorkflowInput(await readBody(req));
       lastRun = attachWorkflowToProject(await runWorkflow(body), body);
       json(res, 200, lastRun);
       return;
@@ -1621,6 +3590,37 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/implementation/ui-preview") {
       const body = await readBody(req);
       const result = createUiPreview(body.patch);
+      json(res, 200, result);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/prototypes/generate") {
+      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
+      const workflow = activeProject?.latest_workflow || lastRun;
+      const result = generateProductPrototype(workflow);
+      json(res, 200, result);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/business-ui/generate") {
+      const body = await readBody(req);
+      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
+      const workflow = activeProject?.latest_workflow || lastRun;
+      if (!workflow) {
+        json(res, 400, { error: "请先运行 AI 工作流，再生成业务 UI 图。" });
+        return;
+      }
+      const result = generateBusinessUiBoards(workflow, body.ui_style);
+      json(res, 200, result);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/ui-designer/generate") {
+      const body = await readBody(req);
+      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
+      const workflow = activeProject?.latest_workflow || lastRun;
+      if (!workflow) {
+        json(res, 400, { error: "请先运行 AI 工作流，再让 UI 设计师 Agent 生成效果图。" });
+        return;
+      }
+      const result = generateUiDesignerConcept(workflow, body.ui_style);
       json(res, 200, result);
       return;
     }
