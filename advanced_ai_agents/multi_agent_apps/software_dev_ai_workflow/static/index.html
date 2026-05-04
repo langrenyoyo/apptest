@@ -18,7 +18,25 @@
             </div>
           </div>
 
+          <section class="project-manager">
+            <div class="project-manager-head">
+              <div>
+                <p class="eyebrow">项目管理</p>
+                <h2>多项目工作台</h2>
+              </div>
+              <button type="button" id="refreshProjectsButton" class="icon-button" title="刷新项目">↻</button>
+            </div>
+            <form id="projectForm" class="project-form">
+              <input name="name" placeholder="项目名称" required />
+              <input name="client_name" placeholder="客户名称" />
+              <input name="industry" placeholder="所属行业" />
+              <button type="submit">新建项目</button>
+            </form>
+            <div id="projectList" class="project-list"></div>
+          </section>
+
           <form id="workflowForm" class="form">
+            <input type="hidden" id="projectIdInput" name="project_id" value="default" />
             <label>
               项目名称
               <input name="project_name" value="AI 合同审查门户" required />
@@ -70,6 +88,7 @@
           </header>
 
           <div id="integrationStatus" class="notice"></div>
+          <div id="runtimeStatus" class="runtime-status"></div>
           <div id="metrics" class="metrics"></div>
           <div id="backlog" class="backlog"></div>
           <div id="timeline" class="timeline">

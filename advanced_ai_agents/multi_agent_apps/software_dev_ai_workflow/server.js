@@ -2,7 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { execFileSync } = require("child_process");
+const { execFileSync, spawnSync } = require("child_process");
 
 function loadEnvFile(filePath = path.join(__dirname, ".env")) {
   if (!fs.existsSync(filePath)) return;
@@ -42,10 +42,13 @@ settings_path = os.path.join(root, "settings.json")
 db_path = os.path.join(root, "cc-switch.db")
 settings = json.load(open(settings_path, encoding="utf-8"))
 provider_id = settings.get("currentProviderCodex")
-if not provider_id:
-    raise SystemExit("currentProviderCodex is not configured")
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
+if not provider_id:
+    current = conn.execute("select id from providers where app_type = 'codex' and is_current = 1 limit 1").fetchone()
+    provider_id = current["id"] if current else None
+if not provider_id:
+    raise SystemExit("current Codex provider is not configured")
 row = conn.execute("select settings_config from providers where id = ? and app_type = 'codex'", (provider_id,)).fetchone()
 endpoint = conn.execute("select url from provider_endpoints where provider_id = ? and app_type = 'codex' order by id desc limit 1", (provider_id,)).fetchone()
 conn.close()
@@ -65,7 +68,7 @@ print(json.dumps({
     const parsed = parseCodexConfig(ccConfig.config || "");
     if (ccConfig.apiKey) process.env.OPENAI_API_KEY = ccConfig.apiKey;
     if (parsed.baseUrl || ccConfig.endpoint) process.env.OPENAI_BASE_URL = parsed.baseUrl || ccConfig.endpoint;
-    if (parsed.model) process.env.OPENAI_MODEL = parsed.model;
+    if (parsed.model && !process.env.OPENAI_MODEL) process.env.OPENAI_MODEL = parsed.model;
     process.env.AI_CONFIG_SOURCE_ACTIVE = "cc-switch";
   } catch (error) {
     process.env.AI_CONFIG_SOURCE_ACTIVE = "env";
@@ -77,6 +80,9 @@ loadCcSwitchConfig();
 
 const PORT = Number(process.env.PORT || 8901);
 let lastRun = null;
+let activeProjectId = "";
+let managedProjects = [];
+const previewRoot = path.join(__dirname, ".preview");
 let workflowStatus = {
   running: false,
   current_agent: "",
@@ -86,6 +92,80 @@ let workflowStatus = {
   error: "",
   workflow_id: "",
 };
+
+function makeProjectId() {
+  return `project_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+}
+
+function projectSummary(project) {
+  return {
+    id: project.id,
+    name: project.name,
+    client_name: project.client_name || "",
+    industry: project.industry || "",
+    status: project.status || "active",
+    created_at: project.created_at,
+    updated_at: project.updated_at,
+    workflow_count: project.workflow_count || 0,
+    latest_workflow_id: project.latest_workflow?.workflow_id || "",
+    latest_workflow_at: project.latest_workflow?.created_at || "",
+  };
+}
+
+function createManagedProject(input = {}) {
+  const now = new Date().toISOString();
+  const project = {
+    id: input.id || makeProjectId(),
+    name: input.name || input.project_name || "未命名项目",
+    client_name: input.client_name || "",
+    industry: input.industry || "",
+    description: input.description || input.goal || "",
+    status: input.status || "active",
+    created_at: now,
+    updated_at: now,
+    workflow_count: 0,
+    latest_workflow: null,
+  };
+  managedProjects.unshift(project);
+  activeProjectId = project.id;
+  return project;
+}
+
+function ensureManagedProject(input = {}) {
+  if (input.project_id) {
+    const existing = managedProjects.find((project) => project.id === input.project_id);
+    if (existing) return existing;
+  }
+  const name = input.project_name || input.name;
+  const existingByName = name
+    ? managedProjects.find((project) => project.name === name && (project.client_name || "") === (input.client_name || ""))
+    : null;
+  if (existingByName) return existingByName;
+  return createManagedProject(input);
+}
+
+function attachWorkflowToProject(workflow, input = {}) {
+  const project = ensureManagedProject(input);
+  project.name = input.project_name || project.name;
+  project.client_name = input.client_name || project.client_name;
+  project.industry = input.industry || project.industry;
+  project.description = input.goal || project.description;
+  project.updated_at = new Date().toISOString();
+  project.workflow_count = (project.workflow_count || 0) + 1;
+  project.latest_workflow = workflow;
+  activeProjectId = project.id;
+  workflow.project_id = project.id;
+  workflow.project_status = project.status;
+  return workflow;
+}
+
+createManagedProject({
+  id: "default",
+  name: "AI 合同审查门户",
+  client_name: "某法律服务公司",
+  industry: "法律科技",
+  description: "默认演示项目",
+});
 
 function json(res, status, data) {
   const body = JSON.stringify(data);
@@ -201,6 +281,13 @@ function openAIResponsesUrl() {
   return `${baseUrl}/v1/responses`;
 }
 
+function openAIChatCompletionsUrl() {
+  const baseUrl = (process.env.OPENAI_BASE_URL || "https://api.openai.com").replace(/\/$/, "");
+  if (baseUrl.endsWith("/chat/completions")) return baseUrl;
+  if (baseUrl.endsWith("/v1")) return `${baseUrl}/chat/completions`;
+  return `${baseUrl}/v1/chat/completions`;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -245,6 +332,87 @@ function buildIssueDrafts(epics) {
       issue_type: "Task",
     },
   ]);
+}
+
+function normalizeIssueCard(issue, index = 0) {
+  const key = issue.key || `DEV-${index + 1}`;
+  const title = issue.title || "实施任务";
+  const labels = Array.isArray(issue.labels) && issue.labels.length ? issue.labels : ["ai-workflow"];
+  const category = labels.includes("frontend") ? "前端" : labels.includes("backend") ? "后端" : labels.includes("quality") ? "质量" : "全栈";
+  const acceptanceCriteria = issue.acceptance_criteria?.length
+    ? issue.acceptance_criteria
+    : [
+        "核心路径可被手动验证",
+        "异常场景有明确错误提示或兜底处理",
+        "关键逻辑具备最小测试或验证步骤",
+      ];
+  const implementationSteps = issue.implementation_steps?.length
+    ? issue.implementation_steps
+    : [
+        "梳理现有代码入口和相关模块边界",
+        "按最小可交付范围实现功能逻辑",
+        "补充状态处理、错误处理和必要的日志",
+        "执行验证命令并记录结果",
+      ];
+  const affectedFiles = issue.affected_files?.length
+    ? issue.affected_files
+    : category === "前端"
+      ? ["static/app.js", "static/styles.css", "static/index.html"]
+      : category === "后端"
+        ? ["server.js", "workflow/engine.py", "workflow/models.py"]
+        : ["server.js", "static/app.js", "static/styles.css"];
+  const testPlan = issue.test_plan?.length
+    ? issue.test_plan
+    : ["运行 node --check server.js", "通过页面手动跑通主流程", "验证失败路径不会破坏已有规则结果"];
+  const risks = issue.risks?.length ? issue.risks : ["需求边界可能需要结合真实用户流程二次确认"];
+  const priority = issue.priority || (labels.includes("quality") ? "P1" : "P2");
+  const estimate = issue.estimate || "0.5-1 day";
+  const owner = issue.owner || (category === "前端" ? "Frontend Engineer" : category === "后端" ? "Backend Engineer" : "Full-stack Engineer");
+  return {
+    ...issue,
+    key,
+    title,
+    labels,
+    issue_type: issue.issue_type || "Task",
+    priority,
+    owner,
+    estimate,
+    affected_files: affectedFiles,
+    implementation_steps: implementationSteps,
+    acceptance_criteria: acceptanceCriteria,
+    test_plan: testPlan,
+    risks,
+    body: issue.body || "",
+  };
+}
+
+function formatIssueCardBody(issue) {
+  const card = normalizeIssueCard(issue);
+  const list = (items) => (items || []).map((item) => `- ${item}`).join("\n");
+  return [
+    card.body ? card.body.trim() : `## 背景\n${card.title}`,
+    "",
+    "## 实施任务卡",
+    "",
+    `- 优先级：${card.priority}`,
+    `- 建议负责人：${card.owner}`,
+    `- 预估工作量：${card.estimate}`,
+    "",
+    "### 涉及文件",
+    list(card.affected_files),
+    "",
+    "### 实施步骤",
+    list(card.implementation_steps),
+    "",
+    "### 验收标准",
+    list(card.acceptance_criteria),
+    "",
+    "### 测试计划",
+    list(card.test_plan),
+    "",
+    "### 风险与注意事项",
+    list(card.risks),
+  ].join("\n");
 }
 
 function extractSignals(request) {
@@ -441,7 +609,7 @@ ${bullets([
       risks: signals.risks.length,
       integrations: signals.integrations.length,
     },
-    backlog_issues: issueDrafts,
+    backlog_issues: issueDrafts.map(normalizeIssueCard),
     generation_mode: "deterministic",
     next_actions: [
       "与客户确认范围边界、验收标准和优先级。",
@@ -545,6 +713,73 @@ async function callOpenAIJson(prompt) {
   throw lastError || new Error("OpenAI 生成失败：未知错误");
 }
 
+async function callOpenAIJson(prompt) {
+  const maxAttempts = Number(process.env.OPENAI_MAX_RETRIES || 3);
+  const requestTimeoutMs = Number(process.env.OPENAI_REQUEST_TIMEOUT_MS || 45000);
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  let lastError = null;
+
+  async function requestJson(url, body, label) {
+    const response = await withTimeout(
+      fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify(body),
+      }),
+      requestTimeoutMs,
+      `${label} request`
+    );
+    const responseBody = await response.text();
+    if (!response.ok) {
+      const error = new Error(`${label} failed: ${response.status} ${responseBody}`);
+      error.status = response.status;
+      throw error;
+    }
+    const data = parseJsonLenient(responseBody);
+    const outputText = label === "OpenAI Chat" ? data.choices?.[0]?.message?.content || "" : getOutputText(data);
+    return parseJsonLenient(outputText);
+  }
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      try {
+        return await requestJson(
+          openAIResponsesUrl(),
+          {
+            model,
+            input: prompt,
+            text: { format: { type: "json_object" } },
+            store: false,
+          },
+          "OpenAI Responses"
+        );
+      } catch (responsesError) {
+        lastError = responsesError;
+        if (!isRetryableOpenAIStatus(responsesError.status)) throw responsesError;
+      }
+
+      return await requestJson(
+        openAIChatCompletionsUrl(),
+        {
+          model,
+          messages: [{ role: "user", content: prompt }],
+          response_format: { type: "json_object" },
+        },
+        "OpenAI Chat"
+      );
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxAttempts) throw lastError;
+    }
+    await sleep(500 * attempt);
+  }
+
+  throw lastError || new Error("OpenAI generation failed");
+}
+
 async function runStageAgent(agent, request, fallbackWorkflow, completedStages) {
   const fallbackStage = fallbackWorkflow.stages.find((item) => item.id === agent.id);
   const prompt = `
@@ -567,7 +802,15 @@ ${agent.includeBacklog ? `如果你是研发负责人 Agent，还必须输出：
       "title": "可直接作为 Issue 标题",
       "body": "Markdown，包含背景、实施要点、验收标准",
       "labels": ["ai-workflow"],
-      "issue_type": "Task"
+      "issue_type": "Task",
+      "priority": "P1",
+      "owner": "Full-stack Engineer",
+      "estimate": "0.5-1 day",
+      "affected_files": ["server.js", "static/app.js"],
+      "implementation_steps": ["梳理现有入口", "实现最小功能", "补充错误处理"],
+      "acceptance_criteria": ["核心路径可验证", "失败路径有提示"],
+      "test_plan": ["运行语法检查", "手动验证主流程"],
+      "risks": ["依赖外部配置或真实数据"]
     }
   ]
 }
@@ -647,7 +890,7 @@ async function generateWithOpenAI(request, fallbackWorkflow) {
   return {
     ...fallbackWorkflow,
     stages,
-    backlog_issues: backlogIssues,
+    backlog_issues: backlogIssues.map(normalizeIssueCard),
     next_actions: nextActions,
     metrics: {
       ...fallbackWorkflow.metrics,
@@ -715,7 +958,7 @@ function requireEnv(names) {
 
 function getIssueDrafts(workflow, limit) {
   if (!workflow) throw new Error("还没有生成工作流，请先运行 AI 工作流。");
-  return (workflow.backlog_issues || []).slice(0, limit || 20);
+  return (workflow.backlog_issues || []).map(normalizeIssueCard).slice(0, limit || 20);
 }
 
 async function createGitHubIssues(workflow, limit) {
@@ -734,7 +977,7 @@ async function createGitHubIssues(workflow, limit) {
       },
       body: JSON.stringify({
         title: `[${issue.key}] ${issue.title}`,
-        body: issue.body,
+        body: formatIssueCardBody(issue),
         labels: issue.labels || ["ai-workflow"],
       }),
     });
@@ -775,7 +1018,7 @@ async function createJiraIssues(workflow, limit) {
         fields: {
           project: { key: process.env.JIRA_PROJECT_KEY },
           summary: `[${issue.key}] ${issue.title}`,
-          description: jiraDescription(issue.body),
+          description: jiraDescription(formatIssueCardBody(issue)),
           issuetype: { name: process.env.JIRA_ISSUE_TYPE || issue.issue_type || "Task" },
           labels: (issue.labels || ["ai-workflow"]).map((label) => label.replace(/[^A-Za-z0-9_-]/g, "-")),
         },
@@ -791,6 +1034,421 @@ async function createJiraIssues(workflow, limit) {
     });
   }
   return results;
+}
+
+function findIssueCard(workflow, issueKey) {
+  if (!workflow) throw new Error("还没有生成工作流，请先运行 AI 工作流。");
+  const issues = (workflow.backlog_issues || []).map(normalizeIssueCard);
+  const issue = issues.find((item) => item.key === issueKey);
+  if (!issue) throw new Error(`未找到任务卡：${issueKey}`);
+  return issue;
+}
+
+async function generateImplementationPlan(workflow, issueKey) {
+  if (!process.env.OPENAI_API_KEY) throw new Error("未启用真实 Agent，无法生成代码实施方案。");
+  const issue = findIssueCard(workflow, issueKey);
+  const prompt = `
+你是资深软件工程负责人。请基于下面的实施任务卡，生成一份“代码自动化实施方案”。
+
+要求：
+- 只输出 JSON，不要输出 Markdown 代码围栏。
+- 不要声称已经修改代码。
+- 方案必须适合交给代码 Agent 或开发者执行。
+- 如果任务卡的涉及文件只是推测，请在 risks 中说明需要先确认真实代码路径。
+
+JSON 字段：
+{
+  "issue_key": "${issue.key}",
+  "title": "任务标题",
+  "summary": "一句话说明实施目标",
+  "change_plan": [
+    {
+      "file": "建议修改的文件路径",
+      "reason": "为什么改这个文件",
+      "changes": ["具体修改点"]
+    }
+  ],
+  "steps": ["按顺序执行的实现步骤"],
+  "test_commands": ["可执行或手动验证命令"],
+  "acceptance_checks": ["完成后如何验收"],
+  "risks": ["风险或需要人工确认的点"],
+  "rollback_plan": ["如何回滚或降低风险"]
+}
+
+任务卡：
+${JSON.stringify(issue, null, 2)}
+
+当前工作流上下文：
+${JSON.stringify({
+  project_name: workflow.project_name,
+  client_name: workflow.client_name,
+  metrics: workflow.metrics,
+  generation_mode: workflow.generation_mode,
+}, null, 2)}
+`;
+  const plan = await callOpenAIJson(prompt);
+  return {
+    issue,
+    plan: {
+      issue_key: issue.key,
+      title: issue.title,
+      ...plan,
+      generated_at: new Date().toISOString(),
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    },
+  };
+}
+
+async function generatePatchDraft(workflow, issueKey, implementationPlan = null) {
+  if (!process.env.OPENAI_API_KEY) throw new Error("未启用真实 Agent，无法生成 patch 草案。");
+  const issue = findIssueCard(workflow, issueKey);
+  const prompt = `
+你是资深代码生成 Agent。请基于任务卡和实施方案，生成“patch 草案”。
+
+重要边界：
+- 只输出 JSON，不要输出 Markdown 代码围栏。
+- 这是草案，不会自动应用；不要声称已经修改文件。
+- diff 必须尽量使用 unified diff 风格。
+- 如果缺少真实代码上下文，请生成保守 patch 草案，并在 assumptions/risks 中说明需要人工确认。
+- 不要发明密钥、真实外部账号或不可验证的配置。
+
+JSON 字段：
+{
+  "issue_key": "${issue.key}",
+  "title": "任务标题",
+  "summary": "这个 patch 草案要做什么",
+  "files": [
+    {
+      "path": "文件路径",
+      "purpose": "修改目的",
+      "patch": "unified diff 草案"
+    }
+  ],
+  "test_commands": ["测试或验证命令"],
+  "manual_checks": ["人工检查点"],
+  "assumptions": ["假设"],
+  "risks": ["风险"],
+  "rollback_plan": ["回滚方式"]
+}
+
+任务卡：
+${JSON.stringify(issue, null, 2)}
+
+实施方案：
+${JSON.stringify(implementationPlan || {}, null, 2)}
+
+工作流上下文：
+${JSON.stringify({
+  project_name: workflow.project_name,
+  client_name: workflow.client_name,
+  generation_mode: workflow.generation_mode,
+}, null, 2)}
+`;
+  const strictPatchPrompt = `${prompt}
+
+Hard requirement for every files[].patch:
+- Output a real git-apply compatible unified diff only.
+- The patch string must contain file headers like "diff --git a/path b/path" OR at minimum "--- a/path" and "+++ b/path".
+- The patch string must contain at least one "@@ ... @@" hunk.
+- Do not put Markdown fences, prose, bullets, JSON, or explanations inside files[].patch.
+- If you cannot produce a valid diff, return files: [] and explain the blocker in risks.
+`;
+  const patchDraft = await callOpenAIJson(strictPatchPrompt);
+  const quality = patchQualityReport(patchDraft);
+  return {
+    issue,
+    patch: {
+      issue_key: issue.key,
+      title: issue.title,
+      ...patchDraft,
+      patch_quality: quality,
+      generated_at: new Date().toISOString(),
+      model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+      status: quality.valid ? "draft_only" : "invalid_diff",
+    },
+  };
+}
+
+async function generateCodeDraft(workflow, issueKey) {
+  const planResult = await generateImplementationPlan(workflow, issueKey);
+  const patchResult = await generatePatchDraft(workflow, issueKey, planResult.plan);
+  return {
+    issue: planResult.issue,
+    plan: planResult.plan,
+    patch: patchResult.patch,
+    status: "draft_only",
+    generated_at: new Date().toISOString(),
+  };
+}
+
+function validatePatchPaths(patchText) {
+  const root = path.resolve(__dirname);
+  const fileMatches = [...String(patchText).matchAll(/^(?:---|\+\+\+) (?:a\/|b\/)?(.+)$/gm)];
+  for (const match of fileMatches) {
+    const filePath = match[1].trim();
+    if (!filePath || filePath === "/dev/null") continue;
+    if (filePath.includes("\0") || path.isAbsolute(filePath)) {
+      throw new Error(`Patch 包含非法路径：${filePath}`);
+    }
+    const resolved = path.resolve(root, filePath);
+    if (!resolved.startsWith(root + path.sep) && resolved !== root) {
+      throw new Error(`Patch 路径越界：${filePath}`);
+    }
+  }
+}
+
+function runGitApply(args, patchText) {
+  return spawnSync("git", args, {
+    cwd: __dirname,
+    input: patchText,
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+}
+
+function runGitApplyIn(cwd, args, patchText) {
+  return spawnSync("git", args, {
+    cwd,
+    input: patchText,
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+}
+
+function cleanPatchText(rawPatch) {
+  let textValue = String(rawPatch || "").trim();
+  textValue = textValue.replace(/^```(?:diff|patch)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const diffStart = textValue.search(/^(diff --git|--- |\+\+\+ )/m);
+  if (diffStart > 0) textValue = textValue.slice(diffStart).trim();
+  return textValue;
+}
+
+function looksLikeUnifiedDiff(patchText) {
+  return /^(diff --git|--- )/m.test(patchText) && /^\+\+\+ /m.test(patchText) && /^@@ /m.test(patchText);
+}
+
+function patchQualityReport(patchDraft) {
+  const files = patchDraft?.files || [];
+  const file_reports = files.map((file) => {
+    const cleaned = cleanPatchText(file.patch);
+    const valid = looksLikeUnifiedDiff(cleaned);
+    return {
+      path: file.path || "",
+      valid_unified_diff: valid,
+      reason: valid ? "" : "patch 字段必须包含 diff --git 或 ---、+++、@@ hunk；当前内容不是可 git apply 的 unified diff。",
+    };
+  });
+  return {
+    valid: file_reports.length > 0 && file_reports.every((item) => item.valid_unified_diff),
+    file_reports,
+  };
+}
+
+function patchTextFromDraft(patchDraft) {
+  const files = patchDraft?.files || [];
+  if (!files.length) throw new Error("Patch 草案没有可预览的文件。");
+  const patches = files.map((file) => cleanPatchText(file.patch)).filter(Boolean);
+  if (!patches.length) throw new Error("Patch 草案没有 diff 内容。");
+  const patchText = `${patches.join("\n\n")}\n`;
+  if (!looksLikeUnifiedDiff(patchText)) {
+    throw new Error("生成的 Patch 不是可应用的 unified diff，无法预览。请重新生成 Patch 草案，或要求 AI 输出包含 ---、+++ 和 @@ 的 git apply 格式 diff。");
+  }
+  validatePatchPaths(patchText);
+  return patchText;
+}
+
+function createUiPreview(patchDraft) {
+  let patchText = patchTextFromDraft(patchDraft);
+  const previewId = `ui_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  const previewDir = path.join(previewRoot, previewId);
+  fs.mkdirSync(previewDir, { recursive: true });
+
+  fs.cpSync(path.join(__dirname, "static"), path.join(previewDir, "static"), { recursive: true });
+  const previewIndexPath = path.join(previewDir, "static", "index.html");
+  for (const fileName of ["server.js", "package.json"]) {
+    const source = path.join(__dirname, fileName);
+    if (fs.existsSync(source)) fs.copyFileSync(source, path.join(previewDir, fileName));
+  }
+
+  let check = runGitApplyIn(previewDir, ["apply", "--check", "--recount", "--whitespace=nowarn", "-"], patchText);
+  if (check.status !== 0 && /No valid patches in input/i.test(check.stderr || check.stdout || "")) {
+    patchText = cleanPatchText(patchText);
+    check = runGitApplyIn(previewDir, ["apply", "--check", "--recount", "--whitespace=nowarn", "-"], patchText);
+  }
+  if (check.status !== 0) {
+    throw new Error(`UI 预览检查失败：${check.stderr || check.stdout || "git apply --check failed"}。请重新生成 Patch 草案，当前 diff 可能存在 hunk 上下文或行号损坏。`);
+  }
+
+  const applied = runGitApplyIn(previewDir, ["apply", "--recount", "--whitespace=nowarn", "-"], patchText);
+  if (applied.status !== 0) {
+    throw new Error(`UI 预览生成失败：${applied.stderr || applied.stdout || "git apply failed"}`);
+  }
+
+  if (fs.existsSync(previewIndexPath)) {
+    const html = fs
+      .readFileSync(previewIndexPath, "utf8")
+      .replaceAll('href="/static/', `href="/preview/${previewId}/static/`)
+      .replaceAll('src="/static/', `src="/preview/${previewId}/static/`);
+    const previewStyles = `
+      <style>
+        body.ui-preview-mode .form-panel,
+        body.ui-preview-mode .project-manager,
+        body.ui-preview-mode #githubButton,
+        body.ui-preview-mode #jiraButton,
+        body.ui-preview-mode #runButton {
+          display: none !important;
+        }
+        body.ui-preview-mode .workspace {
+          grid-template-columns: minmax(0, 1fr) !important;
+        }
+        body.ui-preview-mode .results {
+          grid-column: 1 / -1;
+        }
+        body.ui-preview-mode .toolbar .actions {
+          display: none !important;
+        }
+        body.ui-preview-mode .shell {
+          padding: 20px;
+        }
+      </style>
+    `;
+    const previewHtml = html
+      .replace("<body>", '<body class="ui-preview-mode">')
+      .replace("</head>", `${previewStyles}</head>`);
+    fs.writeFileSync(previewIndexPath, previewHtml, "utf8");
+  }
+
+  return {
+    preview_id: previewId,
+    preview_url: `/preview/${previewId}/`,
+    files: (patchDraft.files || []).map((file) => file.path).filter(Boolean),
+    generated_at: new Date().toISOString(),
+    message: "UI 预览已生成，尚未修改当前工作区。",
+  };
+}
+
+function runGit(args) {
+  return spawnSync("git", args, {
+    cwd: __dirname,
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+}
+
+function gitOutput(args) {
+  const result = runGit(args);
+  if (result.status !== 0) return (result.stderr || result.stdout || "").trim();
+  return (result.stdout || "").trim();
+}
+
+function collectAppliedDiffSummary(files, testCommands = [], patchText = "") {
+  const cleanFiles = [...new Set((files || []).filter(Boolean))];
+  const diffArgs = cleanFiles.length ? ["diff", "--unified=3", "--", ...cleanFiles] : ["diff", "--unified=3"];
+  const statArgs = cleanFiles.length ? ["diff", "--stat", "--", ...cleanFiles] : ["diff", "--stat"];
+  const nameArgs = cleanFiles.length ? ["diff", "--name-only", "--", ...cleanFiles] : ["diff", "--name-only"];
+  const changedFiles = gitOutput(nameArgs).split(/\r?\n/).filter(Boolean);
+  const diff = gitOutput(diffArgs);
+  return {
+    diff_stat: gitOutput(statArgs),
+    changed_files: changedFiles.length ? changedFiles : cleanFiles,
+    diff: diff || patchText,
+    suggested_tests: testCommands.length ? testCommands : ["node --check server.js", "node --check static/app.js", "手动验证相关页面流程"],
+  };
+}
+
+function applyPatchDraft(patchDraft) {
+  const files = patchDraft?.files || [];
+  if (!files.length) throw new Error("Patch 草案没有可应用的文件。");
+  const patches = files.map((file) => String(file.patch || "").trim()).filter(Boolean);
+  if (!patches.length) throw new Error("Patch 草案没有 diff 内容。");
+  const patchText = `${patches.join("\n\n")}\n`;
+  validatePatchPaths(patchText);
+
+  const check = runGitApply(["apply", "--check", "--recount", "--whitespace=nowarn", "-"], patchText);
+  if (check.status !== 0) {
+    throw new Error(`Patch 检查失败：${check.stderr || check.stdout || "git apply --check failed"}`);
+  }
+
+  const applied = runGitApply(["apply", "--recount", "--whitespace=nowarn", "-"], patchText);
+  if (applied.status !== 0) {
+    throw new Error(`Patch 应用失败：${applied.stderr || applied.stdout || "git apply failed"}`);
+  }
+
+  const appliedFiles = files.map((file) => file.path).filter(Boolean);
+  const diffSummary = collectAppliedDiffSummary(appliedFiles, patchDraft.test_commands || [], patchText);
+
+  return {
+    issue_key: patchDraft.issue_key || "",
+    status: "applied",
+    applied_at: new Date().toISOString(),
+    files: appliedFiles,
+    message: "Patch 已应用到本地工作区，尚未提交。",
+    ...diffSummary,
+  };
+}
+
+function reversePatchDraft(patchDraft) {
+  const files = patchDraft?.files || [];
+  if (!files.length) throw new Error("Patch 草案没有可撤销的文件。");
+  const patches = files.map((file) => String(file.patch || "").trim()).filter(Boolean);
+  if (!patches.length) throw new Error("Patch 草案没有 diff 内容。");
+  const patchText = `${patches.join("\n\n")}\n`;
+  validatePatchPaths(patchText);
+
+  const check = runGitApply(["apply", "--reverse", "--check", "--recount", "--whitespace=nowarn", "-"], patchText);
+  if (check.status !== 0) {
+    throw new Error(`Patch 撤销检查失败：${check.stderr || check.stdout || "git apply --reverse --check failed"}`);
+  }
+
+  const reversed = runGitApply(["apply", "--reverse", "--recount", "--whitespace=nowarn", "-"], patchText);
+  if (reversed.status !== 0) {
+    throw new Error(`Patch 撤销失败：${reversed.stderr || reversed.stdout || "git apply --reverse failed"}`);
+  }
+
+  const filesChanged = files.map((file) => file.path).filter(Boolean);
+  return {
+    issue_key: patchDraft.issue_key || "",
+    status: "reverted",
+    reverted_at: new Date().toISOString(),
+    files: filesChanged,
+    message: "Patch 已从本地工作区撤销，尚未提交。",
+    ...collectAppliedDiffSummary(filesChanged, patchDraft.test_commands || [], ""),
+  };
+}
+
+async function generateCommitDraft(patchDraft, applyResult = null) {
+  if (!process.env.OPENAI_API_KEY) throw new Error("未启用真实 Agent，无法生成提交说明。");
+  const prompt = `
+你是资深工程负责人。请基于 patch 草案和应用后的 diff 摘要，生成提交说明与 PR 草稿。
+
+要求：
+- 只输出 JSON，不要输出 Markdown 代码围栏。
+- 不要声称已经提交、推送或创建 PR。
+- 文案应适合人工审查后复制到 Git。
+
+JSON 字段：
+{
+  "commit_message": "type(scope): concise summary",
+  "pr_title": "PR 标题",
+  "pr_description": "Markdown 格式 PR 描述，包含背景、变更、测试、风险",
+  "review_checklist": ["审查点"],
+  "recommended_tests": ["建议执行的测试命令"],
+  "risk_notes": ["风险说明"]
+}
+
+Patch 草案：
+${JSON.stringify(patchDraft || {}, null, 2)}
+
+应用结果：
+${JSON.stringify(applyResult || {}, null, 2)}
+`;
+  const draft = await callOpenAIJson(prompt);
+  return {
+    ...draft,
+    generated_at: new Date().toISOString(),
+    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    status: "draft_only",
+  };
 }
 
 function exportMarkdown(workflow) {
@@ -814,11 +1472,37 @@ function exportMarkdown(workflow) {
     }
   }
   lines.push("## 下一步", "", ...workflow.next_actions.map((item) => `- ${item}`));
-  lines.push("", "## Backlog Issues", "", ...(workflow.backlog_issues || []).map((issue) => `- ${issue.key}：${issue.title}`));
+  lines.push("", "## Backlog Issues", "", ...(workflow.backlog_issues || []).map((issue) => formatIssueCardBody(issue)));
   return `${lines.join("\n").trim()}\n`;
 }
 
 function serveStatic(req, res) {
+  if (req.url.startsWith("/preview/")) {
+    const parts = req.url.split("?")[0].split("/").filter(Boolean);
+    const previewId = parts[1] || "";
+    const rest = parts.slice(2).join("/") || "static/index.html";
+    if (!/^ui_[A-Za-z0-9_-]+$/.test(previewId)) {
+      text(res, 403, "禁止访问");
+      return;
+    }
+    const previewBase = path.join(previewRoot, previewId);
+    const filePath = path.resolve(previewBase, rest);
+    if (!filePath.startsWith(previewBase + path.sep) && filePath !== previewBase) {
+      text(res, 403, "禁止访问");
+      return;
+    }
+    if (!fs.existsSync(filePath)) {
+      text(res, 404, "未找到");
+      return;
+    }
+    const ext = path.extname(filePath);
+    const type = ext === ".css" ? "text/css" : ext === ".js" ? "application/javascript" : "text/html";
+    const body = fs.readFileSync(filePath);
+    res.writeHead(200, { "Content-Type": `${type}; charset=utf-8` });
+    res.end(body);
+    return;
+  }
+
   const urlPath = req.url === "/" ? "/static/index.html" : req.url;
   const filePath = path.join(__dirname, urlPath.replace(/^\/+/, ""));
   if (!filePath.startsWith(path.join(__dirname, "static"))) {
@@ -848,6 +1532,8 @@ const server = http.createServer(async (req, res) => {
         ai_config_error: process.env.AI_CONFIG_SOURCE_ERROR || "",
         openai_base_url: process.env.OPENAI_BASE_URL || "https://api.openai.com",
         openai_model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        openai_primary_api: "responses",
+        openai_fallback_api: "chat_completions",
         github_enabled: Boolean(process.env.GITHUB_TOKEN && process.env.GITHUB_REPO),
         jira_enabled: Boolean(process.env.JIRA_BASE_URL && process.env.JIRA_EMAIL && process.env.JIRA_API_TOKEN && process.env.JIRA_PROJECT_KEY),
       });
@@ -857,9 +1543,42 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, workflowStatus);
       return;
     }
+    if (req.method === "GET" && req.url === "/api/projects") {
+      json(res, 200, {
+        active_project_id: activeProjectId,
+        projects: managedProjects.map(projectSummary),
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/projects") {
+      const body = await readBody(req);
+      const project = createManagedProject(body);
+      json(res, 200, {
+        active_project_id: activeProjectId,
+        project: projectSummary(project),
+        projects: managedProjects.map(projectSummary),
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/projects/select") {
+      const body = await readBody(req);
+      const project = managedProjects.find((item) => item.id === body.project_id);
+      if (!project) {
+        json(res, 404, { error: "未找到项目" });
+        return;
+      }
+      activeProjectId = project.id;
+      lastRun = project.latest_workflow || lastRun;
+      json(res, 200, {
+        active_project_id: activeProjectId,
+        project: projectSummary(project),
+        latest_workflow: project.latest_workflow || null,
+      });
+      return;
+    }
     if (req.method === "POST" && req.url === "/api/workflows/run") {
       const body = await readBody(req);
-      lastRun = await runWorkflow(body);
+      lastRun = attachWorkflowToProject(await runWorkflow(body), body);
       json(res, 200, lastRun);
       return;
     }
@@ -875,16 +1594,61 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, { provider: "jira", created });
       return;
     }
+    if (req.method === "POST" && req.url === "/api/implementation/plan") {
+      const body = await readBody(req);
+      const result = await generateImplementationPlan(lastRun, body.issue_key);
+      json(res, 200, result);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/implementation/patch-draft") {
+      const body = await readBody(req);
+      const result = await generatePatchDraft(lastRun, body.issue_key, body.implementation_plan);
+      json(res, 200, result);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/implementation/generate-code") {
+      const body = await readBody(req);
+      const result = await generateCodeDraft(lastRun, body.issue_key);
+      json(res, 200, result);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/implementation/apply-patch") {
+      const body = await readBody(req);
+      const result = applyPatchDraft(body.patch);
+      json(res, 200, result);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/implementation/ui-preview") {
+      const body = await readBody(req);
+      const result = createUiPreview(body.patch);
+      json(res, 200, result);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/implementation/revert-patch") {
+      const body = await readBody(req);
+      const result = reversePatchDraft(body.patch);
+      json(res, 200, result);
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/implementation/commit-draft") {
+      const body = await readBody(req);
+      const result = await generateCommitDraft(body.patch, body.apply_result);
+      json(res, 200, result);
+      return;
+    }
     if (req.method === "GET" && req.url === "/api/workflows/latest/export") {
-      text(res, 200, exportMarkdown(lastRun));
+      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
+      text(res, 200, exportMarkdown(activeProject?.latest_workflow || lastRun));
       return;
     }
     if (req.method === "GET" && req.url === "/api/workflows/latest") {
-      if (!lastRun) {
+      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
+      const latestWorkflow = activeProject?.latest_workflow || lastRun;
+      if (!latestWorkflow) {
         json(res, 404, { error: "还没有生成任何工作流。" });
         return;
       }
-      json(res, 200, lastRun);
+      json(res, 200, latestWorkflow);
       return;
     }
     if (req.method === "GET") {
