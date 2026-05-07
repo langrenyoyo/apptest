@@ -42,6 +42,13 @@ let projectsState = { active_project_id: "default", projects: [] };
 let projectSearchTerm = "";
 let selectedPageIssueKey = "";
 let selectedAgentEmployeeId = "";
+let agentArtifactState = {};
+let requirementActionResult = null;
+let uiDesignerActionResult = null;
+let roleFlowState = { activeRoleId: "requirements-analyst", confirmed: {}, generated: {} };
+
+const roleFlowOrder = ["requirements-analyst", "product-manager", "ui-designer", "architect", "developer", "tester"];
+const roleGenerationActionId = "generate-current-role";
 
 function showView(name) {
   authView?.classList.toggle("hidden", name !== "auth");
@@ -55,6 +62,64 @@ function isLoggedIn() {
 
 function requireLoginView() {
   showView(isLoggedIn() ? "projects" : "auth");
+}
+
+function roleFlowIndex(roleId) {
+  const index = roleFlowOrder.indexOf(roleId);
+  return index < 0 ? roleFlowOrder.length : index;
+}
+
+function isRoleUnlocked(roleId) {
+  return roleFlowIndex(roleId) <= roleFlowIndex(roleFlowState.activeRoleId);
+}
+
+function isRoleGenerated(roleId) {
+  return Boolean(roleFlowState.generated?.[roleId]);
+}
+
+function roleStatus(roleId) {
+  if (roleFlowState.confirmed[roleId]) return "confirmed";
+  if (!isRoleUnlocked(roleId)) return "locked";
+  return isRoleGenerated(roleId) ? "pending_confirm" : "pending_generate";
+}
+
+function roleFlowLabel(roleId) {
+  return (
+    {
+      confirmed: "已确认",
+      pending_confirm: "待确认",
+      pending_generate: "待生成",
+      locked: "待上游确认",
+    }[roleStatus(roleId)] || "待生成"
+  );
+}
+
+function confirmRoleAndAdvance(roleId, result) {
+  const currentIndex = roleFlowIndex(roleId);
+  roleFlowState.confirmed[roleId] = true;
+  roleFlowState.generated[roleId] = true;
+  const nextRoleId = roleFlowOrder[currentIndex + 1] || roleId;
+  roleFlowState.activeRoleId = nextRoleId;
+  if (nextRoleId !== roleId && !roleFlowState.generated[nextRoleId]) {
+    roleFlowState.generated[nextRoleId] = false;
+  }
+  selectedAgentEmployeeId = nextRoleId;
+  if (result) integrationStatus.textContent = result;
+  renderAgentEmployees(latestWorkflow?.agent_employees || []);
+}
+
+function applyRoleAgentWorkflowResult(result) {
+  if (result?.workflow) {
+    const generatedRoleId = result.generated_role_id || result.role_id || roleFlowState.activeRoleId;
+    const nextRoleId = result.next_role_id || generatedRoleId || roleFlowState.activeRoleId;
+    const confirmed = { ...roleFlowState.confirmed };
+    const generated = { ...roleFlowState.generated, [generatedRoleId]: true };
+    latestWorkflow = result.workflow;
+    renderWorkflow(result.workflow);
+    roleFlowState = { activeRoleId: nextRoleId, confirmed, generated };
+    selectedAgentEmployeeId = nextRoleId;
+    renderAgentEmployees(latestWorkflow?.agent_employees || []);
+  }
 }
 
 const agentOrder = [
@@ -95,9 +160,9 @@ function modeLabel(mode) {
   const labels = {
     llm: "真实 LLM Agent 生成",
     multi_agent: "真实多 Agent 团队生成",
-    deterministic: "规则引擎生成",
-    deterministic_pending: "规则结果已返回，AI 后台优化中",
-    deterministic_fallback: "AI 失败后保留规则结果",
+    deterministic: "LLM 未启用",
+    deterministic_pending: "LLM Agent 生成中",
+    deterministic_fallback: "LLM Agent 生成失败",
   };
   return labels[mode] || mode || "未知模式";
 }
@@ -856,7 +921,7 @@ function renderStages(stages = []) {
 
 function runtimeConfigLine() {
   if (!runtimeConfig) return "";
-  const mode = runtimeConfig.llm_enabled ? "真实 Agent 已启用" : "规则引擎模式";
+  const mode = runtimeConfig.llm_enabled ? "真实 Agent 已启用" : "LLM 未启用";
   const source = runtimeConfig.ai_config_source || "env";
   const model = runtimeConfig.openai_model || "未配置模型";
   return `${mode} / ${source} / ${model}`;
@@ -876,11 +941,11 @@ function renderRuntimeStatus(status = null) {
   const hasError = Boolean(status?.error);
   const finished = Boolean(status?.finished_at);
   const statusText = hasError
-    ? `后台优化失败，已保留规则结果：${status.error}`
+    ? `LLM Agent 生成失败：${status.error}`
     : running
-      ? `AI 正在后台优化：${current || "准备中"}`
+      ? `LLM Agent 正在生成：${current || "准备中"}`
       : finished
-        ? "AI 后台优化已完成"
+        ? "LLM Agent 生成已完成"
         : "等待运行";
 
   runtimeStatus.innerHTML = `
@@ -908,22 +973,191 @@ function renderAgentEmployees(employees = []) {
     return;
   }
 
+  const renderDetailList = (items = []) => {
+    if (!items.length) return "";
+    return `
+      <div class="agent-detail-list">
+        ${items
+          .map(
+            (item) => `
+              <article>
+                <strong>${escapeHtml(item.title || item)}</strong>
+                ${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : ""}
+              </article>
+            `
+          )
+          .join("")}
+      </div>
+    `;
+  };
+
+  const renderSectionGroups = (sections = []) => {
+    if (!sections.length) return "";
+    return sections
+      .map(
+        (section) => `
+          <section>
+            <b>${escapeHtml(section.title || "详细信息")}</b>
+            <ul>
+              ${(section.items || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+            </ul>
+          </section>
+        `
+      )
+      .join("");
+  };
+
+  const renderEmployeeActions = (employee) => {
+    const actions = employee.actions || [];
+    if (!actions.length) return "";
+    const locked = !isRoleUnlocked(employee.id);
+    const generated = isRoleGenerated(employee.id);
+    return `
+      <section class="agent-action-section ${locked ? "locked" : ""}">
+        <b>岗位动作 · ${escapeHtml(roleFlowLabel(employee.id))}</b>
+        ${locked ? `<p class="role-lock-note">请先确认上游岗位产物，再进入该岗位生产。</p>` : ""}
+        ${!locked && !generated ? `<p class="role-lock-note">该岗位已解锁，点击“生成${escapeHtml(employee.title || "当前岗位")}产物”后才会调用 LLM。</p>` : ""}
+        ${
+          employee.id === "ui-designer"
+            ? `<label class="ui-style-prompt">
+                UI 风格
+                <input id="uiStylePromptInput" value="企业级 SaaS" placeholder="例如：苹果风、Linear 风、暗色科技、金融法务、极简高端、运营后台" />
+              </label>`
+            : ""
+        }
+        <div class="agent-action-list">
+          ${
+            !locked && !generated
+              ? `<button type="button" data-agent-action="${roleGenerationActionId}">
+                  生成${escapeHtml(employee.title || "当前岗位")}产物
+                </button>`
+              : ""
+          }
+          ${actions
+            .map(
+              (action) => `
+                <button type="button" data-agent-action="${escapeHtml(action.id)}" ${locked || !generated ? "disabled" : ""}>
+                  ${escapeHtml(action.label || "执行")}
+                </button>
+                ${action.description ? `<p>${escapeHtml(action.description)}</p>` : ""}
+              `
+            )
+            .join("")}
+        </div>
+      </section>
+    `;
+  };
+
+  const artifactKey = (employee, item, index) => `${employee.id}:${item.stage_id || "planned"}:${item.title || index}`;
+  const getArtifactState = (key) => agentArtifactState[key] || { expanded: false, status: "pending" };
+  const statusLabel = (status) =>
+    ({
+      pending: "待确认",
+      confirmed: "已确认",
+      needs_update: "需补充",
+    })[status] || "待确认";
+
+  const renderGeneratedArtifacts = (employee, outputs = []) => {
+    if (!outputs.length) return `<p>暂无已生成产物。</p>`;
+    return `
+      <div class="agent-artifact-list">
+        ${outputs
+          .map((item, index) => {
+            const key = artifactKey(employee, item, index);
+            const state = getArtifactState(key);
+            const content = String(item.content || item.detail || "该产物暂无正文，可重新运行工作流生成。").trim();
+            return `
+              <article class="agent-artifact-item ${escapeHtml(state.status)}">
+                <header>
+                  <button type="button" class="artifact-toggle" data-artifact-toggle="${escapeHtml(key)}">
+                    ${state.expanded ? "收起" : "展开"}
+                  </button>
+                  <div>
+                    <strong>${escapeHtml(item.title || item)}</strong>
+                    <small>${escapeHtml(item.stage_name || item.kind || "产物")}</small>
+                  </div>
+                  <em>${escapeHtml(statusLabel(state.status))}</em>
+                </header>
+                ${
+                  state.expanded
+                    ? `<pre>${escapeHtml(content)}</pre>
+                       <div class="artifact-status-actions">
+                         <button type="button" data-artifact-status="${escapeHtml(key)}" data-status-value="confirmed">标记已确认</button>
+                         <button type="button" class="secondary" data-artifact-status="${escapeHtml(key)}" data-status-value="needs_update">标记需补充</button>
+                         <button type="button" class="secondary" data-artifact-status="${escapeHtml(key)}" data-status-value="pending">标记待确认</button>
+                       </div>`
+                    : ""
+                }
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
+    `;
+  };
+
+  const renderRequirementActionResult = (employee) => {
+    if (employee.id !== "requirements-analyst" || !requirementActionResult) return "";
+    return `
+      <section class="requirement-action-result">
+        <b>${escapeHtml(requirementActionResult.title)}</b>
+        <p>${escapeHtml(requirementActionResult.summary)}</p>
+        <ul>
+          ${(requirementActionResult.items || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+        </ul>
+      </section>
+    `;
+  };
+
+  const renderUiDesignerActionResult = (employee) => {
+    if (employee.id !== "ui-designer" || !uiDesignerActionResult) return "";
+    return `
+      <section class="requirement-action-result">
+        <b>${escapeHtml(uiDesignerActionResult.title)}</b>
+        <p>${escapeHtml(uiDesignerActionResult.summary)}</p>
+        <ul>
+          ${(uiDesignerActionResult.items || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+        </ul>
+      </section>
+    `;
+  };
+
   const selectedIndex = employees.findIndex((employee) => employee.id === selectedAgentEmployeeId);
   const selected = selectedIndex >= 0 ? employees[selectedIndex] : null;
+  const renderRoleFlowProgress = () => `
+    <div class="role-flow-progress">
+      ${roleFlowOrder
+        .map((roleId, index) => {
+          const employee = employees.find((item) => item.id === roleId);
+          if (!employee) return "";
+          const state = roleStatus(roleId) === "confirmed" ? "done" : roleId === roleFlowState.activeRoleId ? "active" : roleStatus(roleId) === "pending_generate" ? "ready" : "locked";
+          return `<span class="${state}"><b>${String(index + 1).padStart(2, "0")}</b>${escapeHtml(employee.title)}</span>`;
+        })
+        .join("")}
+    </div>
+  `;
   const renderFullEmployeeCard = (employee, index, detailMode = false) => {
     const upstream = index > 0 ? employees[index - 1] : null;
     const downstream = index < employees.length - 1 ? employees[index + 1] : null;
     const outputs = employee.outputs || [];
     const deliverables = employee.deliverables || [];
+    const deliverableDetails = employee.deliverable_details || [];
+    const detailSections = employee.detail_sections || [];
+    const locked = !isRoleUnlocked(employee.id);
+    const acceptanceCriteria = employee.acceptance_criteria || [
+      "产物能被下游岗位直接使用",
+      "风险、状态和负责人清晰",
+      "保留人工确认和沙盒验证入口",
+    ];
     return `
-      <article class="agent-role-card ${detailMode ? "detail-mode" : ""} ${escapeHtml(employee.status || "pending")}">
+      <article class="agent-role-card ${detailMode ? "detail-mode" : ""} ${locked ? "locked" : ""} ${escapeHtml(employee.status || "pending")}">
         <header>
           <span>${String(employee.order || "").padStart(2, "0")}</span>
           <div>
             <p class="eyebrow">${escapeHtml(employee.agent_name || "")}</p>
             <h4>${escapeHtml(employee.title || "Agent 员工")}</h4>
           </div>
-          <em>${escapeHtml(employee.status === "completed" ? "已完成" : "待执行")}</em>
+          <em>${escapeHtml(roleFlowLabel(employee.id))}</em>
         </header>
         <div class="agent-card-sections">
           <section>
@@ -934,17 +1168,21 @@ function renderAgentEmployees(employees = []) {
             <b>当前任务</b>
             <p>${escapeHtml(employee.current_task || employee.responsibility || "")}</p>
           </section>
+          ${renderEmployeeActions(employee)}
+          ${renderRequirementActionResult(employee)}
+          ${renderUiDesignerActionResult(employee)}
           <section>
             <b>岗位交付物</b>
-            <div class="agent-output-list">
-              ${deliverables.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
-            </div>
+            ${
+              deliverableDetails.length
+                ? renderDetailList(deliverableDetails)
+                : `<div class="agent-output-list">${deliverables.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>`
+            }
           </section>
+          ${renderSectionGroups(detailSections)}
           <section>
             <b>已生成产物</b>
-            <div class="agent-output-list">
-              ${outputs.map((item) => `<span>${escapeHtml(item.title || item)}</span>`).join("")}
-            </div>
+            ${renderGeneratedArtifacts(employee, outputs)}
           </section>
           <section class="agent-flow-section">
             <b>上下游</b>
@@ -954,11 +1192,16 @@ function renderAgentEmployees(employees = []) {
           <section>
             <b>验收关注</b>
             <ul>
-              <li>产物能被下游岗位直接使用</li>
-              <li>风险、状态和负责人清晰</li>
-              <li>保留人工确认和沙盒验证入口</li>
+              ${acceptanceCriteria.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
             </ul>
           </section>
+          ${employee.id === "product-manager" ? `<section class="agent-prototype-section"><b>产品原型预览</b><div id="prototypePanel" class="prototype-panel"></div></section>` : ""}
+          ${
+            employee.id === "ui-designer"
+              ? `<section class="agent-prototype-section"><b>业务 UI 图预览</b><div id="businessUiPanel" class="prototype-panel"></div></section>
+                 <section class="agent-prototype-section"><b>UI 视觉设计方案</b><div id="uiDesignerPanel" class="prototype-panel"></div></section>`
+              : ""
+          }
         </div>
       </article>
     `;
@@ -975,9 +1218,15 @@ function renderAgentEmployees(employees = []) {
           </div>
           <button type="button" class="secondary" data-agent-back>返回员工列表</button>
         </div>
+        ${renderRoleFlowProgress()}
         ${renderFullEmployeeCard(selected, selectedIndex, true)}
       </section>
     `;
+    if (selected.id === "product-manager") renderPrototypePanel();
+    if (selected.id === "ui-designer") {
+      renderBusinessUiPanel();
+      renderUiDesignerPanel();
+    }
     return;
   }
 
@@ -990,20 +1239,22 @@ function renderAgentEmployees(employees = []) {
           <p>员工列表展示岗位摘要，进入详情页后可查看该员工的全部分类详情和交付物。</p>
         </div>
       </div>
+      ${renderRoleFlowProgress()}
       <div class="agent-employee-card-grid">
         ${employees
           .map((employee) => {
             const outputs = employee.outputs || [];
             const deliverables = employee.deliverables || [];
+            const locked = !isRoleUnlocked(employee.id);
             return `
-              <button type="button" class="agent-role-entry-card ${escapeHtml(employee.status || "pending")}" data-agent-detail-id="${escapeHtml(employee.id)}">
+              <button type="button" class="agent-role-entry-card ${locked ? "locked" : ""} ${escapeHtml(employee.status || "pending")}" data-agent-detail-id="${escapeHtml(employee.id)}">
                 <header>
                   <span>${String(employee.order || "").padStart(2, "0")}</span>
                   <div>
                     <p class="eyebrow">${escapeHtml(employee.agent_name || "")}</p>
                     <h4>${escapeHtml(employee.title || "Agent 员工")}</h4>
                   </div>
-                  <em>${escapeHtml(employee.status === "completed" ? "已完成" : "待执行")}</em>
+                  <em>${escapeHtml(roleFlowLabel(employee.id))}</em>
                 </header>
                 <p>${escapeHtml(employee.responsibility || "")}</p>
                 <div class="agent-output-list">
@@ -1023,10 +1274,14 @@ function renderWorkflow(workflow) {
   latestWorkflow = workflow;
   selectedPageIssueKey = "";
   selectedAgentEmployeeId = "";
+  agentArtifactState = {};
+  requirementActionResult = null;
+  uiDesignerActionResult = null;
+  roleFlowState = { activeRoleId: "requirements-analyst", confirmed: {}, generated: { "requirements-analyst": true } };
   projectTitle.textContent = workflow.project_name || "未命名项目";
   modeLine.textContent = `${modeLabel(workflow.generation_mode)}${workflow.model ? ` / ${workflow.model}` : ""}`;
   integrationStatus.textContent = workflow.generation_error
-    ? `AI 生成失败，已保留规则结果：${workflow.generation_error}`
+    ? `AI 生成失败：${workflow.generation_error}`
     : "";
   renderAgentEmployees(workflow.agent_employees || []);
 }
@@ -1134,13 +1389,14 @@ renderBacklog = function renderPageBacklogListView(issues = []) {
 };
 
 function renderPrototypePanel(result = latestPrototype) {
-  if (!prototypePanel) return;
+  const activePrototypePanel = document.getElementById("prototypePanel");
+  if (!activePrototypePanel) return;
   if (!result) {
-    prototypePanel.innerHTML = "";
+    activePrototypePanel.innerHTML = "";
     return;
   }
   if (result.loading) {
-    prototypePanel.innerHTML = `
+    activePrototypePanel.innerHTML = `
       <section class="prototype-card">
         <div>
           <p class="eyebrow">产品原型</p>
@@ -1151,7 +1407,7 @@ function renderPrototypePanel(result = latestPrototype) {
     return;
   }
   if (result.error) {
-    prototypePanel.innerHTML = `
+    activePrototypePanel.innerHTML = `
       <section class="prototype-card error">
         <div>
           <p class="eyebrow">产品原型</p>
@@ -1163,7 +1419,7 @@ function renderPrototypePanel(result = latestPrototype) {
     return;
   }
 
-  prototypePanel.innerHTML = `
+  activePrototypePanel.innerHTML = `
     <section class="prototype-card">
       <div class="prototype-copy">
         <p class="eyebrow">产品原型</p>
@@ -1183,13 +1439,14 @@ function renderPrototypePanel(result = latestPrototype) {
 }
 
 function renderBusinessUiPanel(result = latestBusinessUi) {
-  if (!businessUiPanel) return;
+  const activeBusinessUiPanel = document.getElementById("businessUiPanel");
+  if (!activeBusinessUiPanel) return;
   if (!result) {
-    businessUiPanel.innerHTML = "";
+    activeBusinessUiPanel.innerHTML = "";
     return;
   }
   if (result.loading) {
-    businessUiPanel.innerHTML = `
+    activeBusinessUiPanel.innerHTML = `
       <section class="prototype-card">
         <div>
           <p class="eyebrow">业务 UI 图</p>
@@ -1200,7 +1457,7 @@ function renderBusinessUiPanel(result = latestBusinessUi) {
     return;
   }
   if (result.error) {
-    businessUiPanel.innerHTML = `
+    activeBusinessUiPanel.innerHTML = `
       <section class="prototype-card error">
         <div>
           <p class="eyebrow">业务 UI 图</p>
@@ -1211,7 +1468,7 @@ function renderBusinessUiPanel(result = latestBusinessUi) {
     `;
     return;
   }
-  businessUiPanel.innerHTML = `
+  activeBusinessUiPanel.innerHTML = `
     <section class="prototype-card business-ui-card">
       <div class="prototype-copy">
         <p class="eyebrow">业务 UI 图</p>
@@ -1232,13 +1489,14 @@ function renderBusinessUiPanel(result = latestBusinessUi) {
 }
 
 function renderUiDesignerPanel(result = latestUiDesigner) {
-  if (!uiDesignerPanel) return;
+  const activeUiDesignerPanel = document.getElementById("uiDesignerPanel");
+  if (!activeUiDesignerPanel) return;
   if (!result) {
-    uiDesignerPanel.innerHTML = "";
+    activeUiDesignerPanel.innerHTML = "";
     return;
   }
   if (result.loading) {
-    uiDesignerPanel.innerHTML = `
+    activeUiDesignerPanel.innerHTML = `
       <section class="prototype-card">
         <div>
           <p class="eyebrow">UI 设计师 Agent</p>
@@ -1249,7 +1507,7 @@ function renderUiDesignerPanel(result = latestUiDesigner) {
     return;
   }
   if (result.error) {
-    uiDesignerPanel.innerHTML = `
+    activeUiDesignerPanel.innerHTML = `
       <section class="prototype-card error">
         <div>
           <p class="eyebrow">UI 设计师 Agent</p>
@@ -1262,7 +1520,7 @@ function renderUiDesignerPanel(result = latestUiDesigner) {
   }
   const tokens = result.design_system?.tokens || {};
   const components = result.design_system?.components || [];
-  uiDesignerPanel.innerHTML = `
+  activeUiDesignerPanel.innerHTML = `
     <section class="prototype-card ui-designer-card">
       <div class="prototype-copy">
         <p class="eyebrow">UI 设计师 Agent</p>
@@ -1365,17 +1623,19 @@ async function createIssues(provider) {
   }
 }
 
-async function generateProductPrototype() {
-  if (!prototypeButton) return;
+async function generateProductPrototype(triggerButton = prototypeButton) {
   if (!latestWorkflow) {
     integrationStatus.textContent = "请先运行 AI 工作流，再生成产品原型。";
     return;
   }
 
-  const original = prototypeButton.textContent;
-  prototypeButton.disabled = true;
-  prototypeButton.textContent = "生成中...";
+  const original = triggerButton?.textContent || "";
+  if (triggerButton) {
+    triggerButton.disabled = true;
+    triggerButton.textContent = "生成中...";
+  }
   latestPrototype = { loading: true };
+  integrationStatus.textContent = "产品经理 Agent 正在生成产品原型...";
   renderPrototypePanel();
 
   try {
@@ -1392,10 +1652,176 @@ async function generateProductPrototype() {
     latestPrototype = { error: error.message };
     integrationStatus.textContent = error.message;
   } finally {
-    prototypeButton.disabled = false;
-    prototypeButton.textContent = original;
+    if (triggerButton) {
+      triggerButton.disabled = false;
+      triggerButton.textContent = original;
+    }
     renderPrototypePanel();
   }
+}
+
+function getEmployeeById(id) {
+  return (latestWorkflow?.agent_employees || []).find((employee) => employee.id === id);
+}
+
+function requirementOutputs() {
+  return getEmployeeById("requirements-analyst")?.outputs || [];
+}
+
+async function runEmployeeRoleAgent(roleId, actionId, extra = {}, options = {}) {
+  const response = await fetch("/api/roles/run-agent", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role_id: roleId, action_id: actionId, extra, ...options }),
+  });
+  return readJsonResponse(response, "岗位 Agent 生成失败");
+}
+
+function markEmployeeOutputsConfirmed(roleId) {
+  const employee = getEmployeeById(roleId);
+  (employee?.outputs || []).forEach((item, index) => {
+    const key = `${employee.id}:${item.stage_id || "planned"}:${item.title || index}`;
+    agentArtifactState[key] = { ...getArtifactStateForGlobal(key), status: "confirmed" };
+  });
+}
+
+async function generateCurrentRole(roleId) {
+  if (!latestWorkflow) {
+    integrationStatus.textContent = "请先运行 AI 工作流，再生成岗位产物。";
+    return;
+  }
+  if (!isRoleUnlocked(roleId)) {
+    integrationStatus.textContent = "请先确认上游岗位产物，再生成当前岗位产物。";
+    return;
+  }
+  if (isRoleGenerated(roleId)) {
+    integrationStatus.textContent = "当前岗位产物已生成，请确认后再进入下游岗位。";
+    return;
+  }
+  const previousRoleId = roleFlowOrder[roleFlowIndex(roleId) - 1] || "";
+  const previousEmployee = previousRoleId ? getEmployeeById(previousRoleId) : null;
+  const result = await runEmployeeRoleAgent(roleId, roleGenerationActionId, {
+    previous_role_id: previousRoleId,
+    previous_outputs: previousEmployee?.outputs || [],
+  });
+  applyRoleAgentWorkflowResult({ ...result, generated_role_id: roleId, next_role_id: roleId });
+  integrationStatus.textContent = result.summary || `${getEmployeeById(roleId)?.title || "当前岗位"}产物已生成，请在卡片内确认后再进入下游岗位。`;
+}
+
+function setRequirementActionResult(result) {
+  requirementActionResult = result;
+  renderAgentEmployees(latestWorkflow?.agent_employees || []);
+  integrationStatus.textContent = result.summary;
+}
+
+async function runRequirementAnalysisAction(actionId) {
+  if (!latestWorkflow) {
+    integrationStatus.textContent = "请先运行 AI 工作流，再操作需求分析师卡片。";
+    return;
+  }
+
+  const outputs = requirementOutputs();
+  if (actionId === "generate-requirement-analysis-report") {
+    const llmResult = await runEmployeeRoleAgent("requirements-analyst", actionId, { outputs });
+    applyRoleAgentWorkflowResult(llmResult);
+    setRequirementActionResult({
+      ...llmResult,
+      title: "需求分析报告已生成",
+      summary: llmResult.summary || "已基于当前需求分析师产物汇总需求基线。",
+      items: llmResult.items?.length ? llmResult.items : [
+        `已汇总 ${outputs.length || 0} 个上游产物。`,
+        "报告覆盖业务目标、用户角色、范围边界、约束风险和待确认事项。",
+        "下一步建议先确认高风险约束，再交接产品经理生成需求文档。",
+      ],
+    });
+    return;
+  }
+
+  if (actionId === "generate-clarification-questions") {
+    const llmResult = await runEmployeeRoleAgent("requirements-analyst", actionId, { outputs });
+    applyRoleAgentWorkflowResult(llmResult);
+    setRequirementActionResult({
+      ...llmResult,
+      title: "待确认问题已生成",
+      summary: llmResult.summary || "已生成进入产品设计前建议确认的问题清单。",
+      items: llmResult.items?.length ? llmResult.items : [
+        "业务目标是否有明确量化指标或验收口径？",
+        "各用户角色的权限边界、审批责任和异常处理是否已确认？",
+        "本期范围外的能力是否已得到客户认可？",
+        "隐私、审计、集成、部署和交付周期约束是否有负责人确认？",
+      ],
+    });
+    return;
+  }
+
+  if (actionId === "handoff-requirement-baseline") {
+    markEmployeeOutputsConfirmed("requirements-analyst");
+    requirementActionResult = {
+      title: "需求基线已确认并交接产品经理",
+      summary: "需求分析师产物已标记确认，产品经理现在处于待生成状态。",
+      items: ["需求基线状态：已确认", "下游岗位：产品经理", "建议动作：进入产品经理卡片，点击生成产品经理产物。"],
+    };
+    confirmRoleAndAdvance("requirements-analyst", "需求基线已确认，产品经理已解锁为待生成。");
+  }
+}
+
+function getArtifactStateForGlobal(key) {
+  return agentArtifactState[key] || { expanded: false, status: "pending" };
+}
+
+function getUiStylePrompt() {
+  return document.getElementById("uiStylePromptInput")?.value?.trim() || businessUiStyleSelect?.value || "enterprise-saas";
+}
+
+async function runWithActionProgress(button, label, task) {
+  const original = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "生成中...";
+  }
+  integrationStatus.textContent = `${label} 正在调用 LLM Agent...`;
+  try {
+    return await task();
+  } catch (error) {
+    integrationStatus.textContent = `${label} 失败：${error.message}`;
+    throw error;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+}
+
+async function handoffUiDesignToDeveloper() {
+  if (!latestWorkflow) {
+    integrationStatus.textContent = "请先运行 AI 工作流，再交接 UI 设计稿。";
+    return;
+  }
+  markEmployeeOutputsConfirmed("ui-designer");
+  uiDesignerActionResult = {
+    title: "UI 设计稿已确认并交接开发人员",
+    summary: "UI 设计师产物已标记确认，架构师现在处于待生成状态。",
+    items: ["设计状态：已确认", "下游岗位：架构师", "建议动作：进入架构师卡片，点击生成架构师产物。"],
+  };
+  confirmRoleAndAdvance("ui-designer", "UI 设计稿已确认，架构师已解锁为待生成。");
+}
+
+async function handoffProductBaseline() {
+  if (!latestWorkflow) {
+    integrationStatus.textContent = "请先运行 AI 工作流，再确认产品产物。";
+    return;
+  }
+  markEmployeeOutputsConfirmed("product-manager");
+  confirmRoleAndAdvance("product-manager", "产品产物已确认，UI 设计师已解锁为待生成。");
+}
+
+async function confirmCurrentRole(roleId) {
+  const employee = getEmployeeById(roleId);
+  markEmployeeOutputsConfirmed(roleId);
+  const next = roleFlowOrder[roleFlowIndex(roleId) + 1];
+  const nextEmployee = next ? getEmployeeById(next) : null;
+  confirmRoleAndAdvance(roleId, next ? `${employee?.title || "当前岗位"}产物已确认，${nextEmployee?.title || "下游岗位"}已解锁为待生成。` : "测试产物已确认，本轮流程已完成。");
 }
 
 async function readJsonResponse(response, fallbackMessage) {
@@ -1410,21 +1836,23 @@ async function readJsonResponse(response, fallbackMessage) {
   return data;
 }
 
-async function generateBusinessUiBoards() {
-  if (!businessUiButton) return;
+async function generateBusinessUiBoards(triggerButton = businessUiButton) {
   if (!latestWorkflow) {
     integrationStatus.textContent = "请先运行 AI 工作流，再生成业务 UI 图。";
     return;
   }
 
-  const original = businessUiButton.textContent;
-  businessUiButton.disabled = true;
-  businessUiButton.textContent = "生成中...";
+  const original = triggerButton?.textContent || "";
+  if (triggerButton) {
+    triggerButton.disabled = true;
+    triggerButton.textContent = "生成中...";
+  }
   latestBusinessUi = { loading: true };
+  integrationStatus.textContent = "UI 设计师 Agent 正在生成业务 UI 图...";
   renderBusinessUiPanel();
 
   try {
-    const uiStyle = businessUiStyleSelect?.value || "enterprise-saas";
+    const uiStyle = getUiStylePrompt();
     const response = await fetch("/api/business-ui/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1432,32 +1860,36 @@ async function generateBusinessUiBoards() {
     });
     const data = await readJsonResponse(response, "业务 UI 图生成失败");
     latestBusinessUi = data;
-    integrationStatus.textContent = "业务 UI 图已生成，可在下方预览或新窗口打开。";
+    integrationStatus.textContent = `业务 UI 图已按「${uiStyle}」生成，可在下方预览或新窗口打开。`;
   } catch (error) {
     latestBusinessUi = { error: error.message };
     integrationStatus.textContent = error.message;
   } finally {
-    businessUiButton.disabled = false;
-    businessUiButton.textContent = original;
+    if (triggerButton) {
+      triggerButton.disabled = false;
+      triggerButton.textContent = original;
+    }
     renderBusinessUiPanel();
   }
 }
 
-async function generateUiDesignerConcept() {
-  if (!uiDesignerButton) return;
+async function generateUiDesignerConcept(triggerButton = uiDesignerButton) {
   if (!latestWorkflow) {
     integrationStatus.textContent = "请先运行 AI 工作流，再让 UI 设计师 Agent 生成效果图。";
     return;
   }
 
-  const original = uiDesignerButton.textContent;
-  uiDesignerButton.disabled = true;
-  uiDesignerButton.textContent = "设计中...";
+  const original = triggerButton?.textContent || "";
+  if (triggerButton) {
+    triggerButton.disabled = true;
+    triggerButton.textContent = "设计中...";
+  }
   latestUiDesigner = { loading: true };
+  integrationStatus.textContent = "UI 设计师 Agent 正在生成视觉设计方案...";
   renderUiDesignerPanel();
 
   try {
-    const uiStyle = businessUiStyleSelect?.value || "enterprise-saas";
+    const uiStyle = getUiStylePrompt();
     const response = await fetch("/api/ui-designer/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1465,13 +1897,15 @@ async function generateUiDesignerConcept() {
     });
     const data = await readJsonResponse(response, "UI 设计师 Agent 生成失败");
     latestUiDesigner = data;
-    integrationStatus.textContent = "UI 设计师 Agent 已生成视觉设计方案和效果图。";
+    integrationStatus.textContent = `UI 设计师 Agent 已按「${uiStyle}」生成视觉设计方案和效果图。`;
   } catch (error) {
     latestUiDesigner = { error: error.message };
     integrationStatus.textContent = error.message;
   } finally {
-    uiDesignerButton.disabled = false;
-    uiDesignerButton.textContent = original;
+    if (triggerButton) {
+      triggerButton.disabled = false;
+      triggerButton.textContent = original;
+    }
     renderUiDesignerPanel();
   }
 }
@@ -1939,6 +2373,41 @@ backlog?.addEventListener("click", (event) => {
 });
 
 agentEmployeeBoard?.addEventListener("click", (event) => {
+  const artifactToggle = event.target.closest("[data-artifact-toggle]");
+  if (artifactToggle) {
+    const key = artifactToggle.dataset.artifactToggle;
+    const state = getArtifactStateForGlobal(key);
+    agentArtifactState[key] = { ...state, expanded: !state.expanded };
+    renderAgentEmployees(latestWorkflow?.agent_employees || []);
+    return;
+  }
+  const artifactStatusButton = event.target.closest("[data-artifact-status]");
+  if (artifactStatusButton) {
+    const key = artifactStatusButton.dataset.artifactStatus;
+    const state = getArtifactStateForGlobal(key);
+    agentArtifactState[key] = { ...state, status: artifactStatusButton.dataset.statusValue || "pending", expanded: true };
+    renderAgentEmployees(latestWorkflow?.agent_employees || []);
+    return;
+  }
+  const actionButton = event.target.closest("[data-agent-action]");
+  if (actionButton) {
+    const actionId = actionButton.dataset.agentAction;
+    if (actionId === roleGenerationActionId) runWithActionProgress(actionButton, "岗位产物生成", () => generateCurrentRole(selectedAgentEmployeeId)).catch(() => {});
+    if (actionId === "generate-product-prototype") generateProductPrototype(actionButton);
+    if (actionId === "handoff-product-baseline") runWithActionProgress(actionButton, "产品经理交接", handoffProductBaseline).catch(() => {});
+    if (actionId === "generate-business-ui") generateBusinessUiBoards(actionButton);
+    if (actionId === "generate-ui-designer-concept") generateUiDesignerConcept(actionButton);
+    if (actionId === "handoff-ui-design") runWithActionProgress(actionButton, "UI 设计师交接", handoffUiDesignToDeveloper).catch(() => {});
+    if (actionId === "confirm-current-role") runWithActionProgress(actionButton, "岗位确认", () => confirmCurrentRole(selectedAgentEmployeeId)).catch(() => {});
+    if (
+      actionId === "generate-requirement-analysis-report" ||
+      actionId === "generate-clarification-questions" ||
+      actionId === "handoff-requirement-baseline"
+    ) {
+      runWithActionProgress(actionButton, "需求分析师", () => runRequirementAnalysisAction(actionId)).catch(() => {});
+    }
+    return;
+  }
   const backButton = event.target.closest("[data-agent-back]");
   if (backButton) {
     selectedAgentEmployeeId = "";
@@ -1987,7 +2456,15 @@ form.addEventListener("submit", async (event) => {
   stopStatusPolling();
   runButton.disabled = true;
   runButton.textContent = "正在生成...";
-  integrationStatus.textContent = "";
+  integrationStatus.textContent = "LLM Agent 正在生成，请稍候...";
+  renderRuntimeStatus({
+    running: true,
+    current_agent: "提交请求中",
+    completed_agents: [],
+    started_at: new Date().toISOString(),
+    error: "",
+  });
+  startStatusPolling();
 
   try {
     const response = await fetch("/api/workflows/run", {
@@ -1996,19 +2473,31 @@ form.addEventListener("submit", async (event) => {
       body: JSON.stringify(formToJson(form)),
     });
 
-    if (!response.ok) throw new Error(`请求失败：${response.status}`);
+    const workflow = await readJsonResponse(response, `请求失败：${response.status}`);
 
-    const workflow = await response.json();
     renderWorkflow(workflow);
 
-    if (workflow.generation_mode === "deterministic_pending") {
-      integrationStatus.textContent = "员工卡片已生成，真实 Agent 正在后台优化。";
-      startStatusPolling();
-    } else {
-      integrationStatus.textContent = "员工卡片已生成。";
-    }
+    integrationStatus.textContent = "需求分析师 Agent 已生成，请确认后再生成产品经理产物。";
+    await refreshLatestWorkflow().catch(() => {});
+    stopStatusPolling();
+    renderRuntimeStatus({
+      running: false,
+      current_agent: "完成",
+      completed_agents: agentOrder,
+      finished_at: new Date().toISOString(),
+      error: "",
+      workflow_id: workflow.workflow_id,
+    });
   } catch (error) {
     integrationStatus.textContent = error.message;
+    stopStatusPolling();
+    renderRuntimeStatus({
+      running: false,
+      current_agent: "失败",
+      completed_agents: [],
+      finished_at: new Date().toISOString(),
+      error: error.message,
+    });
   } finally {
     runButton.disabled = false;
     runButton.textContent = "运行 AI 工作流";

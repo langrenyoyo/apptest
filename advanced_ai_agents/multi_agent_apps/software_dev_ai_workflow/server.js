@@ -675,25 +675,174 @@ const AGENT_EMPLOYEE_ROLES = [
     id: "requirements-analyst",
     title: "需求分析师",
     agent_name: "需求分析师 Agent",
-    responsibility: "澄清客户目标、用户角色、范围边界、约束条件和风险。",
-    deliverables: ["需求澄清文档", "业务目标", "用户角色", "范围边界", "风险清单"],
+    responsibility: "把客户原始想法、会议纪要和零散材料转成可确认、可拆解、可交付的需求基线。",
+    deliverables: ["需求澄清文档", "业务目标地图", "用户角色与场景", "范围边界说明", "约束与风险清单", "待确认问题清单"],
+    deliverable_details: [
+      {
+        title: "需求澄清文档",
+        detail: "沉淀客户背景、业务目标、原始材料摘要、关键术语和已确认假设，作为产品、设计、架构继续工作的统一输入。",
+      },
+      {
+        title: "业务目标地图",
+        detail: "把客户目标拆成可衡量的业务结果，例如效率提升、风险降低、交付周期、合规留痕或客户体验指标。",
+      },
+      {
+        title: "用户角色与场景",
+        detail: "识别主要用户、协作角色、管理员和外部参与方，并描述各角色在核心流程中的任务、痛点和成功标准。",
+      },
+      {
+        title: "范围边界说明",
+        detail: "明确本期必须交付、可延后交付和暂不包含的内容，减少后续 PRD、排期和报价过程中的范围漂移。",
+      },
+      {
+        title: "约束与风险清单",
+        detail: "整理隐私、权限、审计、集成、性能、周期、预算和人工复核等约束，并标注对方案设计的影响。",
+      },
+      {
+        title: "待确认问题清单",
+        detail: "列出需要客户、业务负责人或技术负责人确认的问题，保证进入产品设计前没有关键空白。",
+      },
+    ],
+    detail_sections: [
+      {
+        title: "输入信息",
+        items: ["客户原始需求或会议纪要", "业务目标与成功口径", "目标用户与组织角色", "约束条件、偏好技术栈和交付周期"],
+      },
+      {
+        title: "分析动作",
+        items: ["归纳业务目标和场景", "识别角色、权限和核心流程", "抽取范围边界和集成依赖", "标注风险、假设和待确认问题"],
+      },
+      {
+        title: "交付给下游",
+        items: ["产品经理用于 PRD 和 Backlog 拆解", "UI 设计师用于页面场景和信息架构", "架构师用于系统边界、安全策略和集成设计"],
+      },
+    ],
+    acceptance_criteria: [
+      "业务目标能对应到可验证的结果或指标。",
+      "每类目标用户都有清晰的使用场景和关键任务。",
+      "范围内、范围外和后续版本内容能被客户确认。",
+      "高风险约束和待确认问题不会被带入下游阶段而无人负责。",
+    ],
+    actions: [
+      { id: "generate-requirement-analysis-report", label: "生成需求分析报告", description: "汇总业务目标、角色、范围、约束和初步风险，形成需求基线报告。" },
+      { id: "generate-clarification-questions", label: "生成待确认问题", description: "抽取进入产品设计前必须确认的问题，便于客户和业务负责人补充。" },
+      { id: "handoff-requirement-baseline", label: "确认需求基线并交接产品经理", description: "将需求分析师产物标记为已确认，并提示产品经理进入需求文档和原型阶段。" },
+    ],
     stage_ids: ["business-requirement", "intake"],
   },
   {
     id: "product-manager",
     title: "产品经理",
     agent_name: "产品经理 Agent",
-    responsibility: "把业务需求拆成 PRD、页面清单、用户故事、优先级和验收标准。",
-    deliverables: ["PRD", "页面清单", "用户故事", "Backlog", "验收标准"],
-    stage_ids: ["requirement-doc", "product"],
+    responsibility: "承接需求分析师的需求基线，生成可评审的需求文档、页面清单、用户故事、验收标准和产品原型。",
+    deliverables: ["需求文档", "产品原型", "页面清单", "用户故事", "Backlog", "验收标准"],
+    deliverable_details: [
+      {
+        title: "需求文档",
+        detail: "把需求分析师输出的业务目标、用户角色、范围边界和约束条件整理成可评审 PRD，明确本期范围、页面能力和验收口径。",
+      },
+      {
+        title: "产品原型",
+        detail: "基于需求文档生成可点击原型或业务原型图，展示页面结构、核心流程、关键状态和研发可交付范围。",
+      },
+      {
+        title: "页面清单",
+        detail: "列出本期需要交付的页面、页面目标、主操作、输入输出和页面之间的跳转关系。",
+      },
+      {
+        title: "用户故事",
+        detail: "按角色描述业务价值、使用场景和成功条件，为后续排期、测试和客户验收提供共同语言。",
+      },
+      {
+        title: "Backlog",
+        detail: "把页面和能力拆成可进入研发排期的任务草案，并保留优先级、负责人、估算和标签。",
+      },
+      {
+        title: "验收标准",
+        detail: "定义页面、流程、AI 输出、异常状态和人工确认点的验收条件，确保交付结果可验证。",
+      },
+    ],
+    detail_sections: [
+      {
+        title: "上游输入",
+        items: ["需求分析师的需求澄清文档", "业务目标地图", "用户角色与场景", "范围边界说明", "约束与风险清单"],
+      },
+      {
+        title: "产品动作",
+        items: ["提炼产品范围和 MVP", "拆解页面、流程和关键状态", "编写需求文档与用户故事", "生成产品原型用于客户评审"],
+      },
+      {
+        title: "下游交付",
+        items: ["交给架构师设计技术方案", "交给 UI 设计师细化视觉方案", "交给研发负责人拆解实施任务和沙盒验证"],
+      },
+    ],
+    acceptance_criteria: [
+      "需求文档能追溯到需求分析师的业务目标和范围边界。",
+      "产品原型覆盖主要页面、核心流程、关键状态和人工确认点。",
+      "页面清单能直接驱动 Backlog、UI 设计和研发实施方案。",
+      "每个用户故事都有明确角色、价值和验收条件。",
+    ],
+    actions: [
+      { id: "generate-product-prototype", label: "生成产品原型", description: "根据当前需求文档生成可点击原型预览。" },
+      { id: "handoff-product-baseline", label: "确认产品产物并交接 UI 设计师", description: "确认需求文档、页面清单和产品原型，解锁 UI 设计师岗位。" },
+    ],
+    stage_ids: ["requirement-doc", "product", "business-prototype"],
   },
   {
     id: "ui-designer",
     title: "UI设计师",
     agent_name: "UI 设计师 Agent",
-    responsibility: "生成视觉风格、设计系统、页面效果图、交互状态和设计理由。",
+    responsibility: "承接产品经理的需求文档和产品原型，生成设计系统、业务 UI 图、视觉效果图、交互状态和响应式规则。",
     deliverables: ["设计系统", "UI 效果图", "页面视觉方案", "交互状态", "响应式规则"],
-    stage_ids: ["business-ui", "business-prototype"],
+    deliverable_details: [
+      {
+        title: "设计系统",
+        detail: "定义颜色、字体、间距、按钮、表单、表格、状态标签和反馈组件，保证后续页面实施保持一致。",
+      },
+      {
+        title: "业务 UI 图",
+        detail: "把产品原型转成面向客户评审的业务设计图，突出真实页面结构、主操作、关键数据和状态反馈。",
+      },
+      {
+        title: "UI 效果图",
+        detail: "生成可打开的视觉效果图预览，用于确认整体风格、布局密度、组件组合和页面视觉质量。",
+      },
+      {
+        title: "交互状态",
+        detail: "补齐加载、空态、错误、成功、提交中、需人工确认等状态，避免开发阶段遗漏边界体验。",
+      },
+      {
+        title: "响应式规则",
+        detail: "明确桌面、平板、移动端布局变化、信息优先级和文字不溢出的约束。",
+      },
+    ],
+    detail_sections: [
+      {
+        title: "上游输入",
+        items: ["产品经理的需求文档", "产品原型", "页面清单", "用户故事和验收标准"],
+      },
+      {
+        title: "设计动作",
+        items: ["选择适合业务系统的视觉风格", "生成设计系统和页面设计图", "补齐状态、响应式和可访问性规则", "为开发人员提供可实施的视觉依据"],
+      },
+      {
+        title: "下游交付",
+        items: ["交给开发人员拆解页面实施方案", "交给测试人员检查视觉和交互验收点", "交给交付经理用于客户评审材料"],
+      },
+    ],
+    acceptance_criteria: [
+      "UI 图能追溯到产品原型和需求文档。",
+      "页面主操作、关键数据、状态反馈和异常入口清晰可见。",
+      "设计系统包含颜色、字号、间距、组件和交互状态规则。",
+      "桌面和移动端布局无重叠、无文字溢出。",
+      "确认后的设计稿可以交给开发人员生成实施方案。",
+    ],
+    actions: [
+      { id: "generate-business-ui", label: "生成业务 UI 图", description: "根据需求文档、产品原型和页面任务生成业务设计图。" },
+      { id: "generate-ui-designer-concept", label: "生成 UI 视觉设计方案", description: "生成设计系统、视觉方案、设计理由和效果图预览。" },
+      { id: "handoff-ui-design", label: "确认设计稿并交接开发人员", description: "将 UI 设计师产物标记为已确认，并切换到开发人员岗位。" },
+    ],
+    stage_ids: ["business-ui"],
   },
   {
     id: "architect",
@@ -701,6 +850,7 @@ const AGENT_EMPLOYEE_ROLES = [
     agent_name: "架构师 Agent",
     responsibility: "设计系统架构、接口契约、数据模型、部署边界和安全策略。",
     deliverables: ["架构文档", "API 契约", "数据模型", "技术选型", "安全方案"],
+    actions: [{ id: "confirm-current-role", label: "确认架构方案并交接开发人员", description: "确认架构产物后，解锁开发人员岗位。" }],
     stage_ids: ["architecture-doc", "architecture", "parameter-doc"],
   },
   {
@@ -709,6 +859,7 @@ const AGENT_EMPLOYEE_ROLES = [
     agent_name: "开发人员 Agent",
     responsibility: "把页面方案拆成实现任务、Patch 草案、Mock API 和可沙盒测试的代码路径。",
     deliverables: ["实施方案", "Patch 草案", "Mock API", "代码生成计划", "沙盒入口"],
+    actions: [{ id: "confirm-current-role", label: "确认开发产物并交接测试人员", description: "确认实施方案、Patch 和沙盒入口后，解锁测试人员岗位。" }],
     stage_ids: ["page-implementation", "delivery"],
   },
   {
@@ -717,6 +868,7 @@ const AGENT_EMPLOYEE_ROLES = [
     agent_name: "测试人员 Agent",
     responsibility: "生成测试计划、验收清单、质量门禁、回归策略和缺陷风险。",
     deliverables: ["测试计划", "验收清单", "质量报告", "回归清单", "风险说明"],
+    actions: [{ id: "confirm-current-role", label: "确认测试产物并完成流程", description: "确认测试与验收产物，完成本轮交付流程。" }],
     stage_ids: ["quality", "page-implementation"],
   },
 ];
@@ -732,6 +884,7 @@ function buildAgentEmployees(workflow = {}) {
         stage_name: item.name,
         title: artifactItem.title,
         kind: artifactItem.kind || "markdown",
+        content: artifactItem.content || "",
       }))
     );
     return {
@@ -1091,7 +1244,7 @@ ${pages.map((page, index) => {
 ${request.tech_stack}
 `),
     ]),
-    stage("business-prototype", "5. 生成业务原型图", "原型设计 Agent", "生成业务流程、页面关系和核心操作路径，面向需求确认。", [
+    stage("business-prototype", "5. 生成产品原型", "产品经理 Agent", "产品经理承接需求文档，生成业务流程、页面关系和核心操作路径，面向客户评审与研发拆解。", [
       artifact("业务原型图说明", `
 ## 原型画板
 ${pageList}
@@ -1190,6 +1343,58 @@ const AGENT_DEFINITIONS = [
   },
 ];
 
+const ROLE_STAGE_DEFINITIONS = [
+  {
+    roleId: "requirements-analyst",
+    id: "business-requirement",
+    name: "1. 需求分析师生成需求基线",
+    owner: "需求分析师 Agent",
+    artifactTitle: "需求分析报告",
+    mission: "分析客户原始需求，输出需求澄清、业务目标、用户角色、范围边界、约束风险和待确认问题。",
+  },
+  {
+    roleId: "product-manager",
+    id: "requirement-doc",
+    name: "2. 产品经理生成需求文档与产品原型",
+    owner: "产品经理 Agent",
+    artifactTitle: "需求文档与产品原型说明",
+    mission: "承接需求分析师产物，输出 PRD、页面清单、用户故事、验收标准和产品原型说明。",
+  },
+  {
+    roleId: "ui-designer",
+    id: "business-ui",
+    name: "3. UI 设计师生成业务 UI 图",
+    owner: "UI 设计师 Agent",
+    artifactTitle: "UI 设计方案",
+    mission: "承接产品文档和原型，输出设计系统、业务 UI 图、视觉方案、交互状态和响应式规则。",
+  },
+  {
+    roleId: "architect",
+    id: "architecture-doc",
+    name: "4. 架构师生成架构文档",
+    owner: "架构师 Agent",
+    artifactTitle: "架构文档",
+    mission: "承接需求、产品和 UI 产物，输出技术架构、接口契约、数据模型、部署边界和安全策略。",
+  },
+  {
+    roleId: "developer",
+    id: "page-implementation",
+    name: "5. 开发人员生成实施任务",
+    owner: "开发人员 Agent",
+    artifactTitle: "实施方案与任务拆解",
+    mission: "承接架构和设计产物，输出页面实施方案、Mock API、代码生成计划、沙盒入口和结构化 Backlog。",
+    includeBacklog: true,
+  },
+  {
+    roleId: "tester",
+    id: "quality",
+    name: "6. 测试人员生成测试验收方案",
+    owner: "测试人员 Agent",
+    artifactTitle: "测试验收方案",
+    mission: "承接开发任务，输出测试计划、验收清单、质量门禁、回归策略和风险说明。",
+  },
+];
+
 async function callOpenAIJson(prompt) {
   const maxAttempts = Number(process.env.OPENAI_MAX_RETRIES || 3);
   const requestTimeoutMs = Number(process.env.OPENAI_REQUEST_TIMEOUT_MS || 600000);
@@ -1234,6 +1439,76 @@ async function callOpenAIJson(prompt) {
   }
 
   throw lastError || new Error("OpenAI 生成失败：未知错误");
+}
+
+function compactWorkflowContext(workflow = {}) {
+  return {
+    project_name: workflow.project_name || "",
+    client_name: workflow.client_name || "",
+    metrics: workflow.metrics || {},
+    stages: (workflow.stages || []).map((stageItem) => ({
+      id: stageItem.id,
+      name: stageItem.name,
+      owner: stageItem.owner,
+      summary: stageItem.summary,
+      artifacts: (stageItem.artifacts || []).map((item) => ({
+        title: item.title,
+        content: String(item.content || "").slice(0, 4000),
+      })),
+    })),
+    backlog_issues: (workflow.backlog_issues || []).slice(0, 12).map((issue) => ({
+      key: issue.key,
+      title: issue.title,
+      labels: issue.labels,
+      priority: issue.priority,
+      owner: issue.owner,
+      sandbox: issue.sandbox,
+    })),
+    request: workflow.request || {},
+  };
+}
+
+async function runRoleLlmAgent({ roleId, roleName, actionName, workflow, extra = {}, fallback = {} }) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("未启用 LLM：请通过 CC Switch 或 OPENAI_API_KEY 配置模型后再执行岗位 Agent。");
+  }
+
+  const prompt = `
+你是软件开发公司 AI 工作流中的「${roleName}」。
+当前岗位动作：${actionName}
+
+请基于工作流上下文生成专业、可交付、可给下游岗位使用的结构化结果。
+必须只返回 JSON，不要返回 Markdown 代码块。
+
+返回 JSON 结构：
+{
+  "title": "产物标题",
+  "summary": "一句话总结",
+  "items": ["关键结论或待办"],
+  "artifact_markdown": "Markdown 格式详细产物",
+  "screens": ["如果适用，页面或画板名称"],
+  "design_system": {"tokens": {}, "components": []},
+  "rationale": ["设计或决策理由"]
+}
+
+工作流上下文：
+${JSON.stringify(compactWorkflowContext(workflow), null, 2)}
+
+额外输入：
+${JSON.stringify(extra, null, 2)}
+`;
+
+  const result = await callOpenAIJson(prompt);
+  return {
+    ...fallback,
+    ...result,
+    generation_mode: "llm_agent",
+    role_id: roleId,
+    role_name: roleName,
+    action_name: actionName,
+    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    generated_at: new Date().toISOString(),
+  };
 }
 
 async function callOpenAIJson(prompt) {
@@ -1384,8 +1659,105 @@ ${JSON.stringify(fallbackStage, null, 2)}
   };
 }
 
+async function runRoleStageAgent(roleStage, workflow, extra = {}) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("未启用 LLM：请通过 CC Switch 或 OPENAI_API_KEY 配置模型后再生成角色产物。");
+  }
+  const prompt = `
+你是软件开发公司 AI 工作流中的「${roleStage.owner}」。
+
+当前阶段：${roleStage.name}
+当前任务：${roleStage.mission}
+
+请只输出 JSON，不要输出 Markdown 代码围栏。
+JSON 字段必须包含：
+{
+  "summary": "一句话阶段摘要",
+  "artifact_content": "Markdown 格式阶段产物"
+}
+
+${roleStage.includeBacklog ? `如果你是开发人员 Agent，还必须输出：
+{
+  "backlog_issues": [
+    {
+      "key": "PAGE-01",
+      "title": "页面或模块实施任务标题",
+      "body": "Markdown，包含背景、实施要点、验收标准",
+      "labels": ["ai-workflow"],
+      "issue_type": "Task",
+      "priority": "P1",
+      "owner": "Frontend Engineer",
+      "estimate": "0.5-1 day",
+      "affected_files": ["server.js", "static/app.js"],
+      "implementation_steps": ["实现页面结构", "接入 Mock API"],
+      "acceptance_criteria": ["可沙盒验证"],
+      "test_plan": ["node --check server.js", "node --check static/app.js"]
+    }
+  ]
+}
+要求 backlog_issues 生成 6 到 14 条。` : ""}
+
+约束：
+- 所有内容使用简体中文。
+- 只能基于已经确认的上游阶段继续生成，不要跳过确认流程。
+- 内容必须可交付、可审查、可交给下游岗位继续使用。
+
+当前工作流：
+${JSON.stringify(compactWorkflowContext(workflow), null, 2)}
+
+额外输入：
+${JSON.stringify(extra, null, 2)}
+`;
+  const parsed = await callOpenAIJson(prompt);
+  return {
+    parsed,
+    stage: stage(
+      roleStage.id,
+      roleStage.name,
+      roleStage.owner,
+      parsed.summary || `${roleStage.owner} 已生成阶段产物。`,
+      [artifact(roleStage.artifactTitle, parsed.artifact_content || parsed.artifact_markdown || "")]
+    ),
+  };
+}
+
+async function generateNextRoleStage(workflow, roleId, extra = {}) {
+  const roleStage = ROLE_STAGE_DEFINITIONS.find((item) => item.roleId === roleId);
+  if (!roleStage) throw new Error(`未知角色：${roleId}`);
+  updateWorkflowStatus({
+    running: true,
+    current_agent: roleStage.owner,
+    error: "",
+    workflow_id: workflow.workflow_id,
+  });
+  const result = await runRoleStageAgent(roleStage, workflow, extra);
+  const existingStages = (workflow.stages || []).filter((item) => item.id !== roleStage.id);
+  workflow.stages = [...existingStages, result.stage];
+  if (roleStage.includeBacklog && Array.isArray(result.parsed.backlog_issues) && result.parsed.backlog_issues.length) {
+    workflow.backlog_issues = result.parsed.backlog_issues.map(normalizeIssueCard);
+    workflow.metrics = {
+      ...(workflow.metrics || {}),
+      stories: workflow.backlog_issues.length,
+    };
+  }
+  workflow.generation_mode = "role_sequential_llm";
+  workflow.model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  workflow.agent_employees = buildAgentEmployees(workflow);
+  updateWorkflowStatus({
+    running: false,
+    current_agent: "完成",
+    completed_agents: [...new Set([...(workflowStatus.completed_agents || []), roleStage.owner])],
+    finished_at: new Date().toISOString(),
+    error: "",
+    workflow_id: workflow.workflow_id,
+  });
+  return { workflow, stage: result.stage, parsed: result.parsed };
+}
+
 async function generateWithOpenAI(request, fallbackWorkflow) {
-  if (!process.env.OPENAI_API_KEY) return fallbackWorkflow;
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("未启用 LLM：请通过 CC Switch 或 OPENAI_API_KEY 配置模型后再运行工作流。");
+  }
 
   const stageById = {};
   let backlogIssues = fallbackWorkflow.backlog_issues;
@@ -1431,19 +1803,42 @@ async function generateWithOpenAI(request, fallbackWorkflow) {
   });
 }
 
-async function improveWorkflowInBackground(request, fallback) {
+async function runWorkflow(request) {
+  request = cleanWorkflowInput(request);
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("未启用 LLM：请通过 CC Switch 或 OPENAI_API_KEY 配置模型后再运行工作流。");
+  }
+  const signals = extractSignals(request);
+  const workflow = attachAgentEmployees({
+    workflow_id: crypto.randomBytes(5).toString("hex"),
+    created_at: new Date().toISOString(),
+    project_name: request.project_name,
+    client_name: request.client_name || "",
+    request,
+    stages: [],
+    metrics: {
+      estimated_sprints: Math.max(2, Math.min(6, signals.sprints || 3)),
+      epics: signals.epics.length,
+      stories: 0,
+      risks: signals.risks.length,
+      integrations: signals.integrations.length,
+    },
+    backlog_issues: [],
+    generation_mode: "role_sequential_llm",
+    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    next_actions: ["确认需求分析师产物后，再生成产品经理产物。"],
+  });
   updateWorkflowStatus({
     running: true,
-    current_agent: "规则引擎结果已返回，开始后台优化",
+    current_agent: "需求分析师 Agent",
     completed_agents: [],
     started_at: new Date().toISOString(),
     finished_at: null,
     error: "",
-    workflow_id: fallback.workflow_id,
+    workflow_id: workflow.workflow_id,
   });
   try {
-    const result = await generateWithOpenAI(request, fallback);
-    lastRun = result;
+    const { workflow: result } = await generateNextRoleStage(workflow, "requirements-analyst", { initial_request: request });
     updateWorkflowStatus({
       running: false,
       current_agent: "完成",
@@ -1451,32 +1846,17 @@ async function improveWorkflowInBackground(request, fallback) {
       error: "",
       workflow_id: result.workflow_id,
     });
+    return result;
   } catch (error) {
     updateWorkflowStatus({
       running: false,
-      current_agent: "后台优化失败，已保留规则引擎结果",
+      current_agent: "LLM Agent 生成失败",
       finished_at: new Date().toISOString(),
       error: error.message,
-      workflow_id: fallback.workflow_id,
+      workflow_id: workflow.workflow_id,
     });
-    lastRun = {
-      ...fallback,
-      generation_mode: "deterministic_fallback",
-      generation_error: error.message,
-    };
+    throw error;
   }
-}
-
-function runWorkflow(request) {
-  request = cleanWorkflowInput(request);
-  const fallback = attachAgentEmployees(runDeterministicWorkflow(request));
-  if (!process.env.OPENAI_API_KEY) return fallback;
-  setTimeout(() => improveWorkflowInBackground(request, fallback), 0);
-  return {
-    ...fallback,
-    generation_mode: "deterministic_pending",
-    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-  };
 }
 
 function requireEnv(names) {
@@ -1564,6 +1944,76 @@ async function createJiraIssues(workflow, limit) {
     });
   }
   return results;
+}
+
+async function runEmployeeRoleAction(workflow, body = {}) {
+  if (!workflow) throw new Error("请先运行 AI 工作流，再执行岗位 Agent。");
+  const roleMap = {
+    "requirements-analyst": "需求分析师 Agent",
+    "product-manager": "产品经理 Agent",
+    "ui-designer": "UI 设计师 Agent",
+    architect: "架构师 Agent",
+    developer: "开发人员 Agent",
+    tester: "测试人员 Agent",
+  };
+  const actionMap = {
+    "generate-requirement-analysis-report": "生成需求分析报告",
+    "generate-clarification-questions": "生成待确认问题",
+    "generate-current-role": "生成当前岗位产物",
+    "handoff-requirement-baseline": "确认需求基线并交接产品经理",
+    "handoff-product-baseline": "确认产品产物并交接 UI 设计师",
+    "handoff-ui-design": "确认设计稿并交接开发人员",
+    "confirm-current-role": "确认当前岗位产物并交接下游",
+  };
+  const roleId = body.role_id || "";
+  const actionId = body.action_id || "";
+  const fallback = {
+    title: actionMap[actionId] || "岗位 Agent 结果",
+    summary: process.env.OPENAI_API_KEY ? "岗位 Agent 已生成结果。" : "当前未配置 OPENAI_API_KEY，已使用本地岗位流程结果。",
+    items: ["请检查当前岗位产物并确认后再进入下游岗位。"],
+    artifact_markdown: "",
+    generated_at: new Date().toISOString(),
+  };
+  if (actionId === "generate-current-role") {
+    const generated = await generateNextRoleStage(workflow, roleId, {
+      ...(body.extra || {}),
+    });
+    return {
+      ...fallback,
+      summary: `${roleMap[roleId] || "当前岗位 Agent"} 已生成产物，请确认后再进入下游岗位。`,
+      role_id: roleId,
+      generated_role_id: roleId,
+      next_role_id: roleId,
+      workflow: generated.workflow,
+      generated_stage: generated.stage,
+    };
+  }
+  const result = await runRoleLlmAgent({
+    roleId,
+    roleName: roleMap[roleId] || "软件开发岗位 Agent",
+    actionName: actionMap[actionId] || actionId || "岗位动作",
+    workflow,
+    extra: body.extra || {},
+    fallback,
+  });
+  const nextRoleByAction = {
+  };
+  const nextRoleId = nextRoleByAction[actionId];
+  if (nextRoleId) {
+    const generated = await generateNextRoleStage(workflow, nextRoleId, {
+      previous_role_id: roleId,
+      previous_action_id: actionId,
+      role_agent_result: result,
+      ...(body.extra || {}),
+    });
+    return {
+      ...result,
+      next_role_id: nextRoleId,
+      workflow: generated.workflow,
+      generated_stage: generated.stage,
+    };
+  }
+  return result;
 }
 
 function findIssueCard(workflow, issueKey) {
@@ -1772,10 +2222,7 @@ generateLocalPatchDraft = function generateApplicableLocalPatchDraft(workflow, i
 async function generateImplementationPlan(workflow, issueKey) {
   const issue = findIssueCard(workflow, issueKey);
   if (!process.env.OPENAI_API_KEY) {
-    return {
-      issue,
-      plan: generateLocalImplementationPlan(workflow, issue),
-    };
+    throw new Error("未启用 LLM：无法生成实施方案。");
   }
   const prompt = `
 你是资深软件工程负责人。请基于下面的实施任务卡，生成一份“代码自动化实施方案”。
@@ -1834,10 +2281,7 @@ ${JSON.stringify({
 async function generatePatchDraft(workflow, issueKey, implementationPlan = null) {
   const issue = findIssueCard(workflow, issueKey);
   if (!process.env.OPENAI_API_KEY) {
-    return {
-      issue,
-      patch: generateLocalPatchDraft(workflow, issue, implementationPlan),
-    };
+    throw new Error("未启用 LLM：无法生成 Patch 草案。");
   }
   const prompt = `
 你是资深代码生成 Agent。请基于任务卡和实施方案，生成“patch 草案”。
@@ -2251,14 +2695,14 @@ function buildPrototypeHtml(workflow = {}) {
 </html>`;
 }
 
-function generateProductPrototype(workflow) {
+async function generateProductPrototype(workflow) {
   if (!workflow) throw new Error("请先运行工作流，再生成产品原型。");
   const previewId = `prototype_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
   const previewDir = path.join(previewRoot, previewId);
   fs.mkdirSync(previewDir, { recursive: true });
   fs.writeFileSync(path.join(previewDir, "index.html"), buildPrototypeHtml(workflow), "utf8");
   const screens = inferPrototypeScreens(workflow).map((screen) => screen.name);
-  return {
+  const fallback = {
     prototype_id: previewId,
     preview_url: `/preview/${previewId}/`,
     title: `${workflow.project_name || "项目"} 产品原型`,
@@ -2266,6 +2710,14 @@ function generateProductPrototype(workflow) {
     screens,
     generated_at: new Date().toISOString(),
   };
+  return runRoleLlmAgent({
+    roleId: "product-manager",
+    roleName: "产品经理 Agent",
+    actionName: "生成产品原型",
+    workflow,
+    extra: { screens, preview_url: fallback.preview_url },
+    fallback,
+  });
 }
 
 function extractBusinessPageName(issue = {}, index = 0) {
@@ -2561,18 +3013,39 @@ function buildBusinessUiHtml(workflow = {}) {
                 <h3>${escapeHtml(page.name)}</h3>
                 <p>${escapeHtml(page.purpose || "围绕业务需求展示关键数据、主操作和状态反馈。")}</p>
               </div>
-              <button>主操作</button>
+              <button>提交评审</button>
+            </div>
+            <div class="toolbar-row">
+              <div class="filter-set">
+                <span>全部状态</span>
+                <span>本周更新</span>
+                <span>负责人</span>
+                <span>风险优先</span>
+              </div>
+              <span class="status-pill strong">客户评审版</span>
             </div>
             <div class="stats">
-              <div><b>12</b><span>待处理</span></div>
-              <div><b>5</b><span>需复核</span></div>
-              <div><b>28</b><span>已完成</span></div>
+              <div><b>12</b><span>待处理事项</span></div>
+              <div><b>5</b><span>需人工复核</span></div>
+              <div><b>96%</b><span>流程完整度</span></div>
             </div>
-            <div class="table">
-              <div><b>业务对象</b><b>状态</b><b>负责人</b></div>
-              <div><span>示例业务记录</span><span>待确认</span><span>产品经理</span></div>
-              <div><span>生成结果</span><span>已生成</span><span>交付经理</span></div>
-              <div><span>沙盒测试</span><span>进行中</span><span>测试工程师</span></div>
+            <div class="content-split">
+              <div class="table">
+                <div><b>业务对象</b><b>状态</b><b>负责人</b></div>
+                <div><span>客户需求基线</span><span>已确认</span><span>需求分析师</span></div>
+                <div><span>产品原型评审</span><span>进行中</span><span>产品经理</span></div>
+                <div><span>视觉稿确认</span><span>待确认</span><span>UI 设计师</span></div>
+                <div><span>沙盒测试入口</span><span>已生成</span><span>开发人员</span></div>
+              </div>
+              <aside class="insight-panel">
+                <b>页面设计重点</b>
+                <p>主操作保持在首屏可见，业务状态、负责人和下一步动作必须可以快速扫描。</p>
+                <div class="timeline-mini">
+                  <span>输入：需求文档与产品原型</span>
+                  <span>处理：状态确认与业务操作</span>
+                  <span>输出：交给开发人员实施</span>
+                </div>
+              </aside>
             </div>
           </section>
         </main>
@@ -2756,11 +3229,24 @@ const BUSINESS_UI_STYLE_PRESETS = {
 };
 
 function resolveBusinessUiStyle(styleKey = "") {
-  const key = String(styleKey || "").trim();
-  const preset = BUSINESS_UI_STYLE_PRESETS[key] || BUSINESS_UI_STYLE_PRESETS["enterprise-saas"];
+  const raw = String(styleKey || "").trim();
+  const lowered = raw.toLowerCase();
+  let key = BUSINESS_UI_STYLE_PRESETS[raw] ? raw : "";
+  if (!key && /(apple|ios|mac|苹果|玻璃|glass|极简|高级|高端|minimal|premium)/i.test(raw)) key = "minimal-premium";
+  if (!key && /(ai|科技|数据|研发|developer|tech|cyber|暗色|深色|dark|neon|未来)/i.test(raw)) key = "ai-product";
+  if (!key && /(金融|法务|合同|合规|审计|风控|legal|finance|risk|bank)/i.test(raw)) key = "legal-finance";
+  if (!key && /(运营|后台|控制台|console|ops|表格|效率|admin|dashboard)/i.test(raw)) key = "ops-console";
+  if (!key && /(saas|crm|b2b|企业|管理|审批|项目)/i.test(raw)) key = "enterprise-saas";
+  if (!key) key = "enterprise-saas";
+  const preset = BUSINESS_UI_STYLE_PRESETS[key];
   return {
-    key: BUSINESS_UI_STYLE_PRESETS[key] ? key : "enterprise-saas",
+    key,
+    requested_style: raw,
     ...preset,
+    label: raw && !BUSINESS_UI_STYLE_PRESETS[raw] ? `${preset.label} / ${raw}` : preset.label,
+    description: raw
+      ? `${preset.description} 用户指定风格：${raw}。`
+      : preset.description,
   };
 }
 
@@ -2818,17 +3304,32 @@ function buildBusinessUiStyleCss(style) {
     .hero-line h3 { font-size: 24px; line-height: 1.2; margin: 5px 0; }
     .hero-line p { color: ${style.muted}; margin: 0; line-height: 1.5; }
     button { border: 0; background: ${style.accent}; color: white; border-radius: ${style.radius}; padding: 10px 13px; font-weight: 900; }
+    .toolbar-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; align-items: center; }
+    .filter-set { display: flex; flex-wrap: wrap; gap: 7px; }
+    .filter-set span, .status-pill { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: 999px; color: ${style.muted}; font-size: 12px; font-weight: 800; padding: 7px 9px; }
+    .status-pill.strong { background: ${style.accentSoft}; color: ${style.accentDark}; }
     .stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     .stats div { background: ${style.accentSoft}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 12px; }
     .stats b { display: block; color: ${style.accentDark}; font-size: 24px; }
     .stats span, .table span { color: ${style.muted}; }
+    .content-split { display: grid; grid-template-columns: minmax(0, 1.35fr) 260px; gap: 12px; }
     .table { border: 1px solid ${style.line}; border-radius: ${style.radius}; overflow: hidden; }
     .table div { display: grid; grid-template-columns: 1.4fr .8fr .8fr; gap: 8px; padding: 10px 12px; border-bottom: 1px solid ${style.line}; background: ${style.panel}; }
     .table div:first-child { background: ${style.panelSoft}; color: ${style.ink}; }
     .table div:last-child { border-bottom: 0; }
+    .insight-panel { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 12px; display: grid; gap: 10px; align-content: start; }
+    .insight-panel b { font-size: 14px; }
+    .insight-panel p { color: ${style.muted}; line-height: 1.5; margin: 0; }
+    .timeline-mini { display: grid; gap: 8px; }
+    .timeline-mini span { border-left: 3px solid ${style.accent}; color: ${style.muted}; padding-left: 9px; font-size: 12px; line-height: 1.45; }
+    .design-spec { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 16px; display: grid; gap: 12px; }
+    .spec-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .spec-grid div { background: ${style.panelSoft}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 12px; }
+    .spec-grid b { color: ${style.accentDark}; display: block; margin-bottom: 4px; }
+    .spec-grid span { color: ${style.muted}; font-size: 12px; line-height: 1.45; }
     @media (max-width: 900px) {
       .wrap { padding: 18px; }
-      .cover, .grid { grid-template-columns: 1fr; }
+      .cover, .grid, .content-split, .spec-grid { grid-template-columns: 1fr; }
       .board.wide { grid-column: auto; }
       .mock-window main { grid-template-columns: 1fr; }
       aside { display: none; }
@@ -2924,12 +3425,21 @@ buildBusinessUiHtml = function buildStyledBusinessUiHtml(workflow = {}, styleKey
       </div>
     </header>
     <main class="grid">${boardCards}</main>
+    <section class="design-spec">
+      <h2>设计规范摘要</h2>
+      <div class="spec-grid">
+        <div><b>信息层级</b><span>首屏呈现目标、状态、主操作和风险提示。</span></div>
+        <div><b>组件体系</b><span>导航、筛选、指标、表格、详情面板保持一致。</span></div>
+        <div><b>交互状态</b><span>覆盖加载、空态、错误、成功、需人工确认。</span></div>
+        <div><b>响应式</b><span>窄屏隐藏侧栏，内容转为单列，按钮不挤压文本。</span></div>
+      </div>
+    </section>
   </div>
 </body>
 </html>`;
 };
 
-generateBusinessUiBoards = function generateStyledBusinessUiBoards(workflow, styleKey = "enterprise-saas") {
+generateBusinessUiBoards = async function generateStyledBusinessUiBoards(workflow, styleKey = "enterprise-saas") {
   if (!workflow) throw new Error("请先运行工作流，再生成业务 UI 图。");
   const style = resolveBusinessUiStyle(styleKey);
   const previewId = `businessui_${style.key}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
@@ -2941,7 +3451,7 @@ generateBusinessUiBoards = function generateStyledBusinessUiBoards(workflow, sty
     .filter((issue) => issue.key?.startsWith("PAGE-"))
     .slice(0, 8)
     .map(businessUiPageName);
-  return {
+  const fallback = {
     preview_id: previewId,
     preview_url: `/preview/${previewId}/`,
     title: `${workflow.project_name || "项目"}业务 UI 图`,
@@ -2949,10 +3459,19 @@ generateBusinessUiBoards = function generateStyledBusinessUiBoards(workflow, sty
     style_key: style.key,
     style_label: style.label,
     style_description: style.description,
+    requested_style: style.requested_style || "",
     available_styles: Object.entries(BUSINESS_UI_STYLE_PRESETS).map(([key, value]) => ({ key, label: value.label })),
     boards,
     generated_at: new Date().toISOString(),
   };
+  return runRoleLlmAgent({
+    roleId: "ui-designer",
+    roleName: "UI 设计师 Agent",
+    actionName: "生成业务 UI 图",
+    workflow,
+    extra: { ui_style: styleKey, resolved_style: style, boards, preview_url: fallback.preview_url },
+    fallback,
+  });
 };
 
 function buildUiDesignerConcept(workflow = {}, styleKey = "enterprise-saas") {
@@ -3012,6 +3531,7 @@ function buildUiDesignerConcept(workflow = {}, styleKey = "enterprise-saas") {
     style_key: style.key,
     style_label: style.label,
     style_description: style.description,
+    requested_style: style.requested_style || "",
     design_system: designSystem,
     screen_concepts: screens.map((screen, index) => ({
       ...screen,
@@ -3038,6 +3558,7 @@ function buildUiDesignerPreviewHtml(workflow = {}, concept = {}) {
       <p>${escapeHtml(component.intent)}</p>
     </div>
   `).join("");
+  const firstScreen = screens[0] || { name: "业务工作台", layout: "工作台总览", visual_focus: "展示项目全局状态、关键路径和下一步动作。" };
   const screenCards = screens.map((screen, index) => `
     <section class="screen-card ${index === 0 ? "wide" : ""}">
       <div class="screen-copy">
@@ -3088,6 +3609,16 @@ function buildUiDesignerPreviewHtml(workflow = {}, concept = {}) {
     .designer-hero { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; box-shadow: ${style.shadow}; padding: 30px; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; align-items: end; }
     .designer-hero h1 { font-size: 36px; }
     .designer-hero p { color: ${style.muted}; line-height: 1.65; margin: 8px 0 0; }
+    .showcase { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: stretch; }
+    .desktop-frame, .mobile-frame { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; box-shadow: ${style.shadow}; padding: 16px; }
+    .desktop-frame .screen-mock { min-height: 440px; }
+    .mobile-frame { display: grid; align-content: start; gap: 12px; }
+    .phone { border: 1px solid ${style.line}; border-radius: 26px; background: ${style.panelSoft}; padding: 12px; min-height: 520px; display: grid; gap: 12px; align-content: start; }
+    .phone-top { height: 28px; width: 88px; border-radius: 999px; background: ${style.ink}; opacity: .12; justify-self: center; }
+    .phone-card { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 12px; display: grid; gap: 8px; }
+    .phone-card b { color: ${style.accentDark}; }
+    .phone-card span { color: ${style.muted}; font-size: 12px; }
+    .phone-action { background: ${style.accent}; color: white; border-radius: ${style.radius}; padding: 11px; text-align: center; font-weight: 900; }
     .token-board, .component-board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     .token-board div, .component-card { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 13px; }
     .token-board span { display: block; color: ${style.muted}; font-size: 12px; font-weight: 800; }
@@ -3113,8 +3644,10 @@ function buildUiDesignerPreviewHtml(workflow = {}, concept = {}) {
     .mock-table div:first-child { background: ${style.panelSoft}; }
     .rationale { background: ${style.panel}; border: 1px solid ${style.line}; border-radius: ${style.radius}; padding: 18px; }
     .rationale li { color: ${style.muted}; line-height: 1.6; margin: 6px 0; }
+    .section-title { display: flex; justify-content: space-between; gap: 12px; align-items: end; }
+    .section-title p { color: ${style.muted}; margin: 6px 0 0; }
     @media (max-width: 900px) {
-      .designer-hero, .token-board, .component-board, .screen-mock { grid-template-columns: 1fr; }
+      .designer-hero, .showcase, .token-board, .component-board, .screen-mock { grid-template-columns: 1fr; }
       .screen-card.wide { grid-column: auto; }
       .screen-mock aside { display: none; }
     }
@@ -3134,6 +3667,81 @@ function buildUiDesignerPreviewHtml(workflow = {}, concept = {}) {
         <div><span>页面数</span><b>${screens.length}</b></div>
       </div>
     </section>
+    <section class="showcase">
+      <div class="desktop-frame">
+        <div class="section-title">
+          <div>
+            <h2>桌面端核心画板</h2>
+            <p>${escapeHtml(firstScreen.visual_focus || firstScreen.purpose || "")}</p>
+          </div>
+          <span class="chip">${escapeHtml(firstScreen.layout || "Desktop")}</span>
+        </div>
+        <div class="screen-mock">
+          <aside>
+            <strong>${escapeHtml(projectName)}</strong>
+            <i class="active">${escapeHtml(firstScreen.name)}</i>
+            <i>需求文档</i>
+            <i>产品原型</i>
+            <i>沙盒测试</i>
+          </aside>
+          <main>
+            <header>
+              <div>
+                <small>${escapeHtml(firstScreen.layout || "工作台总览")}</small>
+                <h3>${escapeHtml(firstScreen.name)}</h3>
+              </div>
+              <button>确认设计稿</button>
+            </header>
+            <div class="toolbar-row">
+              <div class="filter-set"><span>全部</span><span>待确认</span><span>高优先级</span></div>
+              <span class="status-pill strong">设计评审中</span>
+            </div>
+            <div class="mock-grid">
+              <div><b>18</b><span>页面任务</span></div>
+              <div><b>7</b><span>交互状态</span></div>
+              <div><b>96%</b><span>可实施度</span></div>
+            </div>
+            <div class="content-split">
+              <div class="mock-table">
+                <div><b>设计对象</b><b>状态</b><b>负责人</b></div>
+                <div><span>核心工作台</span><span>已完成</span><span>UI 设计师</span></div>
+                <div><span>详情抽屉</span><span>待确认</span><span>产品经理</span></div>
+                <div><span>响应式规则</span><span>已完成</span><span>开发人员</span></div>
+              </div>
+              <aside class="insight-panel">
+                <b>设计判断</b>
+                <p>优先保证业务系统的扫描效率和重复操作体验，减少装饰性视觉噪音。</p>
+              </aside>
+            </div>
+          </main>
+        </div>
+      </div>
+      <aside class="mobile-frame">
+        <div class="section-title"><h2>移动端预览</h2><span class="chip">Responsive</span></div>
+        <div class="phone">
+          <div class="phone-top"></div>
+          <div class="phone-card"><b>${escapeHtml(firstScreen.name)}</b><span>移动端保留状态、主操作和关键数据。</span></div>
+          <div class="phone-card"><b>待确认 5</b><span>负责人、风险和下一步动作优先显示。</span></div>
+          <div class="phone-card"><b>沙盒入口</b><span>${escapeHtml(firstScreen.route || "/sandbox/pages")}</span></div>
+          <div class="phone-action">确认下一步</div>
+        </div>
+      </aside>
+    </section>
+    <section class="design-spec">
+      <div class="section-title">
+        <div>
+          <h2>设计系统规格</h2>
+          <p>交给开发人员时需要保留这些视觉约束，避免实现阶段走样。</p>
+        </div>
+        <span class="chip">${escapeHtml(concept.design_system?.name || "Design System")}</span>
+      </div>
+      <div class="spec-grid">
+        <div><b>颜色</b><span>${escapeHtml(tokens.accent || style.accent)} / ${escapeHtml(tokens.surface || style.panel)}</span></div>
+        <div><b>字体</b><span>${escapeHtml(tokens.font || 'Inter, Segoe UI')}</span></div>
+        <div><b>间距</b><span>8px 基准网格，区块间距 16-24px。</span></div>
+        <div><b>状态</b><span>加载、空态、错误、成功、需人工确认。</span></div>
+      </div>
+    </section>
     <section class="component-board">${componentCards}</section>
     <main class="grid">${screenCards}</main>
     <section class="rationale">
@@ -3145,14 +3753,14 @@ function buildUiDesignerPreviewHtml(workflow = {}, concept = {}) {
 </html>`;
 }
 
-function generateUiDesignerConcept(workflow, styleKey = "enterprise-saas") {
+async function generateUiDesignerConcept(workflow, styleKey = "enterprise-saas") {
   if (!workflow) throw new Error("请先运行工作流，再让 UI 设计师 Agent 生成效果图。");
   const concept = buildUiDesignerConcept(workflow, styleKey);
   const previewId = `uidesigner_${concept.style_key}_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
   const previewDir = path.join(previewRoot, previewId);
   fs.mkdirSync(previewDir, { recursive: true });
   fs.writeFileSync(path.join(previewDir, "index.html"), buildUiDesignerPreviewHtml(workflow, concept), "utf8");
-  return {
+  const fallback = {
     ...concept,
     preview_id: previewId,
     preview_url: `/preview/${previewId}/`,
@@ -3160,6 +3768,14 @@ function generateUiDesignerConcept(workflow, styleKey = "enterprise-saas") {
     summary: "UI 设计师 Agent 已生成设计系统、页面视觉方案、设计理由和可打开的效果图预览。",
     generated_at: new Date().toISOString(),
   };
+  return runRoleLlmAgent({
+    roleId: "ui-designer",
+    roleName: "UI 设计师 Agent",
+    actionName: "生成 UI 视觉设计方案",
+    workflow,
+    extra: { ui_style: styleKey, preview_url: fallback.preview_url },
+    fallback,
+  });
 }
 
 function runGit(args) {
@@ -3474,6 +4090,7 @@ const server = http.createServer(async (req, res) => {
         openai_model: process.env.OPENAI_MODEL || "gpt-4o-mini",
         openai_primary_api: "responses",
         openai_fallback_api: "chat_completions",
+        rule_engine_enabled: false,
         github_enabled: Boolean(process.env.GITHUB_TOKEN && process.env.GITHUB_REPO),
         jira_enabled: Boolean(process.env.JIRA_BASE_URL && process.env.JIRA_EMAIL && process.env.JIRA_API_TOKEN && process.env.JIRA_PROJECT_KEY),
       });
@@ -3563,6 +4180,14 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, { provider: "jira", created });
       return;
     }
+    if (req.method === "POST" && req.url === "/api/roles/run-agent") {
+      const body = await readBody(req);
+      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
+      const workflow = activeProject?.latest_workflow || lastRun;
+      const result = await runEmployeeRoleAction(workflow, body);
+      json(res, 200, result);
+      return;
+    }
     if (req.method === "POST" && req.url === "/api/implementation/plan") {
       const body = await readBody(req);
       const result = await generateImplementationPlan(lastRun, body.issue_key);
@@ -3596,7 +4221,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/prototypes/generate") {
       const activeProject = managedProjects.find((project) => project.id === activeProjectId);
       const workflow = activeProject?.latest_workflow || lastRun;
-      const result = generateProductPrototype(workflow);
+      const result = await generateProductPrototype(workflow);
       json(res, 200, result);
       return;
     }
@@ -3608,7 +4233,7 @@ const server = http.createServer(async (req, res) => {
         json(res, 400, { error: "请先运行 AI 工作流，再生成业务 UI 图。" });
         return;
       }
-      const result = generateBusinessUiBoards(workflow, body.ui_style);
+      const result = await generateBusinessUiBoards(workflow, body.ui_style);
       json(res, 200, result);
       return;
     }
@@ -3620,7 +4245,7 @@ const server = http.createServer(async (req, res) => {
         json(res, 400, { error: "请先运行 AI 工作流，再让 UI 设计师 Agent 生成效果图。" });
         return;
       }
-      const result = generateUiDesignerConcept(workflow, body.ui_style);
+      const result = await generateUiDesignerConcept(workflow, body.ui_style);
       json(res, 200, result);
       return;
     }
