@@ -12,6 +12,8 @@ const downloadHtml = document.getElementById("downloadHtml");
 
 let latestWorkflow = null;
 let currentExport = null;
+let reviewToken = new URLSearchParams(window.location.search).get("token") || "";
+let readonlyMode = false;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -69,7 +71,7 @@ function renderReview() {
   }
 
   const exports = latestWorkflow.delivery_exports || [];
-  currentExport = exports[exports.length - 1] || null;
+  currentExport = latestWorkflow.delivery_export || exports[exports.length - 1] || null;
   projectName.textContent = latestWorkflow.project_name || "未命名项目";
   projectSummary.textContent = latestWorkflow.request?.goal || "请确认当前交付包是否满足本轮需求范围。";
 
@@ -79,18 +81,19 @@ function renderReview() {
   }
 
   const locked = Boolean(currentExport.frozen || currentExport.status === "confirmed");
+  const readLocked = locked || readonlyMode;
   packageTitle.textContent = `v${currentExport.version} ${currentExport.label || "交付包"}`;
   customerFeedback.value = currentExport.customer_feedback || "";
-  customerFeedback.disabled = locked;
-  confirmButton.disabled = locked;
-  needsUpdateButton.disabled = locked;
-  downloadMarkdown.href = "/api/delivery-package/export?format=markdown";
-  downloadHtml.href = "/api/delivery-package/export?format=html";
+  customerFeedback.disabled = readLocked;
+  confirmButton.disabled = readLocked;
+  needsUpdateButton.disabled = readLocked;
+  downloadMarkdown.href = `/api/delivery-package/export?format=markdown${reviewToken ? `&token=${encodeURIComponent(reviewToken)}` : ""}`;
+  downloadHtml.href = `/api/delivery-package/export?format=html${reviewToken ? `&token=${encodeURIComponent(reviewToken)}` : ""}`;
 
   reviewStatus.innerHTML = `
     <div>
-      <strong>${locked ? "该版本已确认冻结" : "等待客户验收操作"}</strong>
-      <p>${locked ? "如需继续修改，请联系交付团队导出新版本。" : "请下载交付包查看内容，填写反馈后确认通过或要求修改。"}</p>
+      <strong>${readonlyMode ? "只读验收链接" : locked ? "该版本已确认冻结" : "等待客户验收操作"}</strong>
+      <p>${readonlyMode ? "该链接仅用于查看交付内容，不能提交验收结果。" : locked ? "如需继续修改，请联系交付团队导出新版本。" : "请下载交付包查看内容，填写反馈后确认通过或要求修改。"}</p>
     </div>
     <span class="status-pill ${escapeHtml(currentExport.status || "draft")}">${escapeHtml(statusLabel(currentExport.status))}</span>
   `;
@@ -102,20 +105,23 @@ function renderReview() {
     <span><b>确认时间</b>${escapeHtml(currentExport.confirmed_at ? formatLocalDateTime(currentExport.confirmed_at) : "尚未确认")}</span>
   `;
 
+  const scope = latestWorkflow.scope || {};
   const issues = latestWorkflow.backlog_issues || [];
   const employees = latestWorkflow.agent_employees || [];
   scopeList.innerHTML = `
-    <span><b>Agent 岗位</b>${escapeHtml(employees.length)} 个</span>
-    <span><b>已生成产物</b>${escapeHtml(employees.filter((item) => (item.outputs || []).some((output) => output.content)).length)} 个岗位</span>
-    <span><b>Backlog</b>${escapeHtml(issues.length)} 条任务</span>
-    <span><b>客户变更</b>${escapeHtml(issues.filter((issue) => (issue.labels || []).includes("customer-change") || /^CR-/.test(issue.key || "")).length)} 条</span>
+    <span><b>Agent 岗位</b>${escapeHtml(scope.agent_count ?? employees.length)} 个</span>
+    <span><b>已生成产物</b>${escapeHtml(scope.generated_agent_count ?? employees.filter((item) => (item.outputs || []).some((output) => output.content)).length)} 个岗位</span>
+    <span><b>Backlog</b>${escapeHtml(scope.backlog_count ?? issues.length)} 条任务</span>
+    <span><b>客户变更</b>${escapeHtml(scope.change_request_count ?? issues.filter((issue) => (issue.labels || []).includes("customer-change") || /^CR-/.test(issue.key || "")).length)} 条</span>
   `;
 }
 
 async function loadReview() {
   try {
-    const response = await fetch("/api/workflows/latest");
-    latestWorkflow = await readJson(response, "读取交付工作流失败");
+    const response = await fetch(`/api/client-review${reviewToken ? `?token=${encodeURIComponent(reviewToken)}` : ""}`);
+    const data = await readJson(response, "读取交付工作流失败");
+    latestWorkflow = data.workflow;
+    readonlyMode = Boolean(data.readonly);
     renderReview();
   } catch (error) {
     renderEmpty(error.message);
@@ -134,6 +140,7 @@ async function updateStatus(status) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         export_id: currentExport.id,
+        token: reviewToken,
         status,
         customer_feedback: customerFeedback.value,
       }),

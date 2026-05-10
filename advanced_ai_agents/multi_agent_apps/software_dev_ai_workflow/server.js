@@ -3998,6 +3998,53 @@ function workflowExportVersions(workflow = {}) {
   return Array.isArray(workflow.delivery_exports) ? workflow.delivery_exports : [];
 }
 
+function makeReviewToken() {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+function publicDeliveryExport(record = {}) {
+  const nextRecord = { ...record };
+  delete nextRecord.review_token;
+  delete nextRecord.readonly_token;
+  return nextRecord;
+}
+
+function ensureDeliveryExportTokens(workflow) {
+  let changed = false;
+  const exports = workflowExportVersions(workflow).map((record) => {
+    const nextRecord = { ...record };
+    if (!nextRecord.review_token) {
+      nextRecord.review_token = makeReviewToken();
+      changed = true;
+    }
+    if (!nextRecord.readonly_token) {
+      nextRecord.readonly_token = makeReviewToken();
+      changed = true;
+    }
+    return nextRecord;
+  });
+  if (changed && workflow) {
+    workflow.delivery_exports = exports;
+    saveWorkflowMutation(workflow);
+  }
+  return exports;
+}
+
+function findDeliveryExportByToken(token = "") {
+  if (!token) return { workflow: currentWorkflow(), record: null, readonly: false };
+  const projects = managedProjects.length ? managedProjects : [];
+  for (const project of projects) {
+    const workflow = project.latest_workflow;
+    const exports = ensureDeliveryExportTokens(workflow);
+    const record = exports.find((item) => item.review_token === token || item.readonly_token === token);
+    if (record) return { workflow, record, readonly: record.readonly_token === token };
+  }
+  const workflow = currentWorkflow();
+  const exports = ensureDeliveryExportTokens(workflow);
+  const record = exports.find((item) => item.review_token === token || item.readonly_token === token);
+  return record ? { workflow, record, readonly: record.readonly_token === token } : { workflow: null, record: null, readonly: false };
+}
+
 function deliveryExportStatusLabel(status = "draft") {
   return (
     {
@@ -4191,6 +4238,8 @@ function recordDeliveryExport(workflow, format = "markdown") {
     format,
     status: "draft",
     frozen: false,
+    review_token: makeReviewToken(),
+    readonly_token: makeReviewToken(),
     customer_feedback: "",
     submitted_at: "",
     confirmed_at: "",
@@ -4240,6 +4289,7 @@ function createDeliveryChangeIssue(record, feedback) {
 
 function updateDeliveryExport(workflow, body = {}) {
   if (!workflow) throw new Error("还没有生成工作流，无法更新交付包状态。");
+  ensureDeliveryExportTokens(workflow);
   const exports = workflowExportVersions(workflow);
   const exportIndex = exports.findIndex((item) => item.id === body.export_id);
   if (exportIndex < 0) throw new Error("未找到交付包版本。");
@@ -4288,6 +4338,46 @@ function updateDeliveryExport(workflow, body = {}) {
 
   saveWorkflowMutation(workflow);
   return { export: nextRecord, exports: workflowExportVersions(workflow), change_issue: changeIssue, workflow };
+}
+
+function deliveryReviewUrl(req, token) {
+  const origin = `http://${req.headers.host || `127.0.0.1:${PORT}`}`;
+  return `${origin}/client-review?token=${encodeURIComponent(token)}`;
+}
+
+function buildClientReviewPayload(req, workflow, record, readonly = false) {
+  if (!workflow) throw new Error("还没有生成工作流。");
+  const exports = ensureDeliveryExportTokens(workflow);
+  const currentRecord = record || exports[exports.length - 1] || null;
+  if (!currentRecord) throw new Error("交付团队尚未导出交付包。");
+  const issues = Array.isArray(workflow.backlog_issues) ? workflow.backlog_issues : [];
+  const employees = Array.isArray(workflow.agent_employees) ? workflow.agent_employees : [];
+  return {
+    readonly,
+    workflow: {
+      workflow_id: workflow.workflow_id,
+      project_name: workflow.project_name || "未命名项目",
+      client_name: workflow.client_name || "内部项目",
+      generation_mode: workflow.generation_mode || "deterministic",
+      request: {
+        goal: workflow.request?.goal || "",
+        industry: workflow.request?.industry || "",
+        target_users: workflow.request?.target_users || "",
+        tech_stack: workflow.request?.tech_stack || "",
+      },
+      delivery_export: publicDeliveryExport(currentRecord),
+      scope: {
+        agent_count: employees.length,
+        generated_agent_count: employees.filter((item) => (item.outputs || []).some((output) => output.content)).length,
+        backlog_count: issues.length,
+        change_request_count: issues.filter((issue) => (issue.labels || []).includes("customer-change") || /^CR-/.test(issue.key || "")).length,
+      },
+    },
+    links: {
+      review_url: deliveryReviewUrl(req, currentRecord.review_token),
+      readonly_url: deliveryReviewUrl(req, currentRecord.readonly_token),
+    },
+  };
 }
 
 function findSandboxIssueBySlug(slug = "") {
@@ -4628,27 +4718,58 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && req.url === "/api/delivery-package/versions") {
-      json(res, 200, { exports: workflowExportVersions(currentWorkflow()) });
+      const workflow = currentWorkflow();
+      const exports = ensureDeliveryExportTokens(workflow).map((item) => ({
+        ...publicDeliveryExport(item),
+        review_url: deliveryReviewUrl(req, item.review_token),
+        readonly_url: deliveryReviewUrl(req, item.readonly_token),
+      }));
+      json(res, 200, { exports });
+      return;
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/client-review")) {
+      const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+      const token = url.searchParams.get("token") || "";
+      const { workflow, record, readonly } = findDeliveryExportByToken(token);
+      try {
+        json(res, 200, buildClientReviewPayload(req, workflow || currentWorkflow(), record, readonly));
+      } catch (error) {
+        json(res, 404, { error: error.message });
+      }
       return;
     }
     if (req.method === "POST" && req.url === "/api/delivery-package/status") {
       const body = await readBody(req);
       try {
-        json(res, 200, updateDeliveryExport(currentWorkflow(), body));
+        let workflow = currentWorkflow();
+        if (body.token) {
+          const found = findDeliveryExportByToken(body.token);
+          if (!found.record) throw new Error("验收链接无效或已失效。");
+          if (found.readonly) throw new Error("该链接为只读链接，不能提交验收结果。");
+          workflow = found.workflow;
+          body.export_id = found.record.id;
+        }
+        json(res, 200, updateDeliveryExport(workflow, body));
       } catch (error) {
         json(res, 400, { error: error.message });
       }
       return;
     }
     if (req.method === "GET" && req.url.startsWith("/api/delivery-package/export")) {
-      const workflow = currentWorkflow();
+      const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+      const token = url.searchParams.get("token") || "";
+      const found = token ? findDeliveryExportByToken(token) : null;
+      if (token && !found?.record) {
+        json(res, 403, { error: "验收链接无效或已失效。" });
+        return;
+      }
+      const workflow = found?.workflow || currentWorkflow();
       if (!workflow) {
         json(res, 404, { error: "还没有生成工作流，无法导出交付包。" });
         return;
       }
-      const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
       const format = url.searchParams.get("format") === "html" ? "html" : "markdown";
-      const record = recordDeliveryExport(workflow, format);
+      const record = found?.record || recordDeliveryExport(workflow, format);
       const filename = deliveryExportFilename(workflow, record, format);
       const body = format === "html"
         ? buildDeliveryPackageHtml(workflow, record)

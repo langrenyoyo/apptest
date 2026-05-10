@@ -796,6 +796,23 @@ textarea:focus {
   font-size: 12px;
 }
 
+.review-link-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.review-link-list a {
+  background: #f2f7f5;
+  border: 1px solid #c8ded7;
+  border-radius: 7px;
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 7px 9px;
+  text-decoration: none;
+}
+
 .runtime-panel {
   display: grid;
   grid-template-columns: minmax(220px, 0.75fr) minmax(0, 1.25fr);

@@ -1488,6 +1488,10 @@ function renderDeliveryExportPanel(exports = deliveryExportVersions) {
                     </div>
                   `
               }
+              <div class="review-link-list">
+                <a href="${escapeHtml(item.review_url || "/client-review")}" target="_blank">客户确认链接</a>
+                <a href="${escapeHtml(item.readonly_url || "/client-review")}" target="_blank">只读查看链接</a>
+              </div>
             </article>
           `
         )
