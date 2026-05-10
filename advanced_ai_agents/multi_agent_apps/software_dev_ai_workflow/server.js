@@ -130,6 +130,10 @@ function loadState() {
   try {
     const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
     managedProjects = Array.isArray(state.projects) ? state.projects : [];
+    let stateChanged = false;
+    for (const project of managedProjects) {
+      if (sanitizeWorkflowMojibake(project.latest_workflow)) stateChanged = true;
+    }
     activeProjectId = state.active_project_id || managedProjects[0]?.id || "";
     const activeProject = managedProjects.find((project) => project.id === activeProjectId) || managedProjects[0] || null;
     if (activeProject) activeProjectId = activeProject.id;
@@ -137,6 +141,7 @@ function loadState() {
     if (state.workflow_status && typeof state.workflow_status === "object") {
       workflowStatus = { ...workflowStatus, ...state.workflow_status, running: false };
     }
+    if (stateChanged) persistState();
     return managedProjects.length > 0;
   } catch (error) {
     console.warn(`本地状态读取失败，将使用默认演示项目：${error.message}`);
@@ -174,6 +179,53 @@ function cleanTextInput(value, fallback = "") {
 
 function hasMeaningfulText(value) {
   return typeof value === "string" && value.trim().length > 0 && !hasQuestionMarkMojibake(value);
+}
+
+function cleanMojibakeText(value, fallback = "") {
+  if (value === undefined || value === null) return fallback;
+  const textValue = String(value);
+  return hasQuestionMarkMojibake(textValue) ? fallback : textValue;
+}
+
+function cleanMojibakeBlock(value, fallback = "") {
+  if (value === undefined || value === null) return fallback;
+  const textValue = String(value);
+  if (!hasQuestionMarkMojibake(textValue)) return textValue;
+  return textValue
+    .split(/\r?\n/)
+    .map((line) => (hasQuestionMarkMojibake(line) ? fallback : line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function sanitizeWorkflowMojibake(workflow) {
+  if (!workflow) return false;
+  let changed = false;
+  const feedbackFallback = "历史反馈因本地编码异常已清理，请重新填写。";
+  workflow.delivery_exports = workflowExportVersions(workflow).map((record) => {
+    const nextRecord = { ...record };
+    if (hasQuestionMarkMojibake(nextRecord.customer_feedback)) {
+      nextRecord.customer_feedback = "";
+      changed = true;
+    }
+    return nextRecord;
+  });
+  if (Array.isArray(workflow.backlog_issues)) {
+    workflow.backlog_issues = workflow.backlog_issues.map((issue) => {
+      const nextIssue = { ...issue };
+      if (hasQuestionMarkMojibake(nextIssue.customer_feedback)) {
+        nextIssue.customer_feedback = feedbackFallback;
+        changed = true;
+      }
+      if (hasQuestionMarkMojibake(nextIssue.body)) {
+        nextIssue.body = cleanMojibakeBlock(nextIssue.body, feedbackFallback);
+        changed = true;
+      }
+      return nextIssue;
+    });
+  }
+  return changed;
 }
 
 function cleanWorkflowInput(input = {}) {
