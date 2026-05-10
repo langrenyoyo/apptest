@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>客户交付验收</title>
+    <link rel="stylesheet" href="/static/client-review.css" />
+  </head>
+  <body>
+    <main class="review-shell">
+      <header class="review-hero">
+        <div>
+          <p class="eyebrow">客户交付验收</p>
+          <h1 id="projectName">加载中</h1>
+          <p id="projectSummary">正在读取当前交付包版本。</p>
+        </div>
+        <a href="/" class="secondary-link">返回工作台</a>
+      </header>
+
+      <section id="reviewStatus" class="status-panel"></section>
+
+      <section class="review-grid">
+        <article class="review-card">
+          <p class="eyebrow">当前交付包</p>
+          <h2 id="packageTitle">尚未导出</h2>
+          <div id="packageMeta" class="meta-list"></div>
+          <div class="review-actions">
+            <a id="downloadMarkdown" class="secondary-link" href="/api/delivery-package/export?format=markdown">下载 Markdown</a>
+            <a id="downloadHtml" class="primary-link" href="/api/delivery-package/export?format=html">下载 HTML/PDF</a>
+          </div>
+        </article>
+
+        <article class="review-card">
+          <p class="eyebrow">客户反馈</p>
+          <h2>确认或提出修改</h2>
+          <textarea id="customerFeedback" placeholder="请填写验收意见、修改点或确认说明"></textarea>
+          <div class="review-actions">
+            <button id="confirmButton" type="button">确认通过</button>
+            <button id="needsUpdateButton" type="button" class="warn">需要修改</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="review-card">
+        <p class="eyebrow">项目交付范围</p>
+        <div id="scopeList" class="scope-list"></div>
+      </section>
+    </main>
+
+    <script src="/static/client-review.js"></script>
+  </body>
+</html>

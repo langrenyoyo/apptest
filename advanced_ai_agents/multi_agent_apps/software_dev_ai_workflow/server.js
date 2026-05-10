@@ -4422,7 +4422,8 @@ function serveStatic(req, res) {
     return;
   }
 
-  const urlPath = req.url === "/" ? "/static/index.html" : req.url;
+  const cleanUrl = req.url.split("?")[0];
+  const urlPath = cleanUrl === "/" ? "/static/index.html" : cleanUrl === "/client-review" ? "/static/client-review.html" : cleanUrl;
   const filePath = path.join(__dirname, urlPath.replace(/^\/+/, ""));
   if (!filePath.startsWith(path.join(__dirname, "static"))) {
     text(res, 403, "禁止访问");
