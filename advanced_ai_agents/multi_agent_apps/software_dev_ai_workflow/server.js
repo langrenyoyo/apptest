@@ -82,6 +82,8 @@ const PORT = Number(process.env.PORT || 8901);
 let lastRun = null;
 let activeProjectId = "";
 let managedProjects = [];
+const dataRoot = path.join(__dirname, ".data");
+const stateFile = path.join(dataRoot, "state.json");
 const previewRoot = path.join(__dirname, ".preview");
 let workflowStatus = {
   running: false,
@@ -95,6 +97,54 @@ let workflowStatus = {
 
 function makeProjectId() {
   return `project_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+}
+
+function defaultProjectInput() {
+  return {
+    id: "default",
+    name: "AI 合同审查门户",
+    project_name: "AI 合同审查门户",
+    client_name: "某法律服务公司",
+    industry: "法律科技",
+    description: "默认演示项目",
+  };
+}
+
+function persistState() {
+  const state = {
+    version: 1,
+    active_project_id: activeProjectId,
+    last_run_id: lastRun?.workflow_id || "",
+    workflow_status: workflowStatus,
+    projects: managedProjects,
+    saved_at: new Date().toISOString(),
+  };
+  fs.mkdirSync(dataRoot, { recursive: true });
+  const tempFile = `${stateFile}.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(state, null, 2), "utf8");
+  fs.renameSync(tempFile, stateFile);
+}
+
+function loadState() {
+  if (!fs.existsSync(stateFile)) return false;
+  try {
+    const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    managedProjects = Array.isArray(state.projects) ? state.projects : [];
+    activeProjectId = state.active_project_id || managedProjects[0]?.id || "";
+    const activeProject = managedProjects.find((project) => project.id === activeProjectId) || managedProjects[0] || null;
+    if (activeProject) activeProjectId = activeProject.id;
+    lastRun = activeProject?.latest_workflow || managedProjects.find((project) => project.latest_workflow)?.latest_workflow || null;
+    if (state.workflow_status && typeof state.workflow_status === "object") {
+      workflowStatus = { ...workflowStatus, ...state.workflow_status, running: false };
+    }
+    return managedProjects.length > 0;
+  } catch (error) {
+    console.warn(`本地状态读取失败，将使用默认演示项目：${error.message}`);
+    managedProjects = [];
+    activeProjectId = "";
+    lastRun = null;
+    return false;
+  }
 }
 
 function projectSummary(project) {
@@ -122,11 +172,19 @@ function cleanTextInput(value, fallback = "") {
   return hasQuestionMarkMojibake(textValue) ? fallback : textValue;
 }
 
+function hasMeaningfulText(value) {
+  return typeof value === "string" && value.trim().length > 0 && !hasQuestionMarkMojibake(value);
+}
+
 function cleanWorkflowInput(input = {}) {
+  const rawName = hasMeaningfulText(input.name) ? input.name.trim() : "";
+  const rawProjectName = hasMeaningfulText(input.project_name) ? input.project_name.trim() : "";
+  const projectName = cleanTextInput(rawProjectName || rawName, "AI 合同审查门户");
+  const displayName = cleanTextInput(rawName || rawProjectName, projectName || "未命名项目");
   return {
     ...input,
-    name: cleanTextInput(input.name, "未命名项目"),
-    project_name: cleanTextInput(input.project_name, input.name ? cleanTextInput(input.name, "未命名项目") : "AI 合同审查门户"),
+    name: displayName,
+    project_name: projectName,
     client_name: cleanTextInput(input.client_name, "某法律服务公司"),
     industry: cleanTextInput(input.industry, "法律科技"),
     goal: cleanTextInput(input.goal, "建设一个安全的 Web 应用，支持客户需求管理、AI 交付工作流、产品原型生成和沙盒测试。"),
@@ -154,14 +212,19 @@ function createManagedProject(input = {}) {
   };
   managedProjects.unshift(project);
   activeProjectId = project.id;
+  persistState();
   return project;
 }
 
-function ensureManagedProject(input = {}) {
+function ensureManagedProject(input = {}, options = {}) {
   input = cleanWorkflowInput(input);
   if (input.project_id) {
     const existing = managedProjects.find((project) => project.id === input.project_id);
     if (existing) return existing;
+  }
+  if (options.preferActive && activeProjectId) {
+    const active = managedProjects.find((project) => project.id === activeProjectId);
+    if (active) return active;
   }
   const name = input.project_name || input.name;
   const existingByName = name
@@ -173,8 +236,8 @@ function ensureManagedProject(input = {}) {
 
 function attachWorkflowToProject(workflow, input = {}) {
   input = cleanWorkflowInput(input);
-  const project = ensureManagedProject(input);
-  project.name = input.project_name || project.name;
+  const project = ensureManagedProject(input, { preferActive: Boolean(input.project_id) });
+  project.name = input.project_name || input.name || project.name;
   project.client_name = input.client_name || project.client_name;
   project.industry = input.industry || project.industry;
   project.description = input.goal || project.description;
@@ -184,16 +247,35 @@ function attachWorkflowToProject(workflow, input = {}) {
   activeProjectId = project.id;
   workflow.project_id = project.id;
   workflow.project_status = project.status;
+  persistState();
   return workflow;
 }
 
-createManagedProject({
-  id: "default",
-  name: "AI 合同审查门户",
-  client_name: "某法律服务公司",
-  industry: "法律科技",
-  description: "默认演示项目",
-});
+function activeProject() {
+  return managedProjects.find((project) => project.id === activeProjectId) || managedProjects[0] || null;
+}
+
+function currentWorkflow() {
+  return activeProject()?.latest_workflow || lastRun;
+}
+
+function saveWorkflowMutation(workflow) {
+  if (!workflow) return workflow;
+  lastRun = workflow;
+  const project = managedProjects.find((item) => item.id === (workflow.project_id || activeProjectId)) || activeProject();
+  if (project) {
+    project.latest_workflow = workflow;
+    project.latest_workflow_id = workflow.workflow_id;
+    project.updated_at = new Date().toISOString();
+    activeProjectId = project.id;
+  }
+  persistState();
+  return workflow;
+}
+
+if (!loadState()) {
+  createManagedProject(defaultProjectInput());
+}
 
 function json(res, status, data) {
   const body = JSON.stringify(data);
@@ -4155,6 +4237,7 @@ const server = http.createServer(async (req, res) => {
       }
       activeProjectId = project.id;
       lastRun = project.latest_workflow || lastRun;
+      persistState();
       json(res, 200, {
         active_project_id: activeProjectId,
         project: projectSummary(project),
@@ -4170,39 +4253,39 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && req.url === "/api/integrations/github/issues") {
       const body = await readBody(req);
-      const created = await createGitHubIssues(lastRun, body.limit);
+      const created = await createGitHubIssues(currentWorkflow(), body.limit);
       json(res, 200, { provider: "github", created });
       return;
     }
     if (req.method === "POST" && req.url === "/api/integrations/jira/issues") {
       const body = await readBody(req);
-      const created = await createJiraIssues(lastRun, body.limit);
+      const created = await createJiraIssues(currentWorkflow(), body.limit);
       json(res, 200, { provider: "jira", created });
       return;
     }
     if (req.method === "POST" && req.url === "/api/roles/run-agent") {
       const body = await readBody(req);
-      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
-      const workflow = activeProject?.latest_workflow || lastRun;
+      const workflow = currentWorkflow();
       const result = await runEmployeeRoleAction(workflow, body);
+      if (result.workflow) saveWorkflowMutation(result.workflow);
       json(res, 200, result);
       return;
     }
     if (req.method === "POST" && req.url === "/api/implementation/plan") {
       const body = await readBody(req);
-      const result = await generateImplementationPlan(lastRun, body.issue_key);
+      const result = await generateImplementationPlan(currentWorkflow(), body.issue_key);
       json(res, 200, result);
       return;
     }
     if (req.method === "POST" && req.url === "/api/implementation/patch-draft") {
       const body = await readBody(req);
-      const result = await generatePatchDraft(lastRun, body.issue_key, body.implementation_plan);
+      const result = await generatePatchDraft(currentWorkflow(), body.issue_key, body.implementation_plan);
       json(res, 200, result);
       return;
     }
     if (req.method === "POST" && req.url === "/api/implementation/generate-code") {
       const body = await readBody(req);
-      const result = await generateCodeDraft(lastRun, body.issue_key);
+      const result = await generateCodeDraft(currentWorkflow(), body.issue_key);
       json(res, 200, result);
       return;
     }
@@ -4219,16 +4302,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/prototypes/generate") {
-      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
-      const workflow = activeProject?.latest_workflow || lastRun;
+      const workflow = currentWorkflow();
       const result = await generateProductPrototype(workflow);
       json(res, 200, result);
       return;
     }
     if (req.method === "POST" && req.url === "/api/business-ui/generate") {
       const body = await readBody(req);
-      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
-      const workflow = activeProject?.latest_workflow || lastRun;
+      const workflow = currentWorkflow();
       if (!workflow) {
         json(res, 400, { error: "请先运行 AI 工作流，再生成业务 UI 图。" });
         return;
@@ -4239,8 +4320,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "POST" && req.url === "/api/ui-designer/generate") {
       const body = await readBody(req);
-      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
-      const workflow = activeProject?.latest_workflow || lastRun;
+      const workflow = currentWorkflow();
       if (!workflow) {
         json(res, 400, { error: "请先运行 AI 工作流，再让 UI 设计师 Agent 生成效果图。" });
         return;
@@ -4262,13 +4342,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && req.url === "/api/workflows/latest/export") {
-      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
-      text(res, 200, exportMarkdown(activeProject?.latest_workflow || lastRun));
+      text(res, 200, exportMarkdown(currentWorkflow()));
       return;
     }
     if (req.method === "GET" && req.url === "/api/workflows/latest") {
-      const activeProject = managedProjects.find((project) => project.id === activeProjectId);
-      const latestWorkflow = activeProject?.latest_workflow || lastRun;
+      const latestWorkflow = currentWorkflow();
       if (!latestWorkflow) {
         json(res, 404, { error: "还没有生成任何工作流。" });
         return;
