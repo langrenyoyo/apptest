@@ -19,6 +19,7 @@ const uiDesignerButton = document.getElementById("uiDesignerButton");
 const uiDesignerPanel = document.getElementById("uiDesignerPanel");
 const exportMarkdownButton = document.getElementById("exportMarkdownButton");
 const exportHtmlButton = document.getElementById("exportHtmlButton");
+const projectOverviewPanel = document.getElementById("projectOverviewPanel");
 const deliveryExportPanel = document.getElementById("deliveryExportPanel");
 const projectForm = document.getElementById("projectForm");
 const projectList = document.getElementById("projectList");
@@ -109,6 +110,7 @@ function confirmRoleAndAdvance(roleId, result) {
   }
   selectedAgentEmployeeId = nextRoleId;
   if (result) integrationStatus.textContent = result;
+  renderProjectOverview(latestWorkflow);
   renderAgentEmployees(latestWorkflow?.agent_employees || []);
 }
 
@@ -122,6 +124,7 @@ function applyRoleAgentWorkflowResult(result) {
     renderWorkflow(result.workflow);
     roleFlowState = { activeRoleId: nextRoleId, confirmed, generated };
     selectedAgentEmployeeId = nextRoleId;
+    renderProjectOverview(latestWorkflow);
     renderAgentEmployees(latestWorkflow?.agent_employees || []);
   }
 }
@@ -187,6 +190,127 @@ function deliveryStatusLabel(status = "draft") {
       needs_update: "需修改",
     }[status] || "草稿"
   );
+}
+
+function workflowHealthSummary(workflow = {}) {
+  const employees = workflow.agent_employees || [];
+  const issues = workflow.backlog_issues || [];
+  const exports = workflow.delivery_exports || [];
+  const generated = employees.filter((employee) => (employee.outputs || []).some((item) => item.content)).length;
+  const confirmedRoles = Object.values(roleFlowState.confirmed || {}).filter(Boolean).length;
+  const currentExport = exports[exports.length - 1] || null;
+  const changeIssues = issues.filter((issue) => (issue.labels || []).includes("customer-change") || /^CR-/.test(issue.key || ""));
+  const blockers = [];
+  if (workflow.generation_error) blockers.push("AI 生成异常待处理");
+  if (!exports.length) blockers.push("尚未导出交付包");
+  if (currentExport?.status === "needs_update") blockers.push("客户反馈要求修改");
+  if (currentExport?.status === "pending_customer_confirmation") blockers.push("等待客户确认交付包");
+  const confirmedExport = exports.some((item) => item.status === "confirmed");
+  if (exports.length && !confirmedExport && currentExport?.status !== "pending_customer_confirmation" && currentExport?.status !== "needs_update") {
+    blockers.push("交付包尚未进入客户确认");
+  }
+  const score = Math.max(0, 100 - blockers.length * 18 - changeIssues.length * 6 + confirmedExport * 12);
+  const level = blockers.length >= 2 || currentExport?.status === "needs_update" ? "risk" : confirmedExport ? "healthy" : "watch";
+  const nextRole = employees.find((employee) => roleStatus(employee.id) === "pending_generate" || roleStatus(employee.id) === "pending_confirm");
+  const nextAction =
+    workflow.next_actions?.[0] ||
+    (nextRole ? `推进${nextRole.title}：${roleFlowLabel(nextRole.id)}` : "导出交付包并提交客户确认");
+  return {
+    employees,
+    issues,
+    exports,
+    currentExport,
+    generated,
+    confirmedRoles,
+    changeIssues,
+    blockers,
+    score: Math.min(100, score),
+    level,
+    nextAction,
+  };
+}
+
+function renderProjectOverview(workflow = latestWorkflow) {
+  if (!projectOverviewPanel) return;
+  if (!workflow) {
+    projectOverviewPanel.innerHTML = "";
+    return;
+  }
+  const summary = workflowHealthSummary(workflow);
+  const totalRoles = summary.employees.length || roleFlowOrder.length;
+  const generatedPercent = totalRoles ? Math.round((summary.generated / totalRoles) * 100) : 0;
+  const confirmedPercent = totalRoles ? Math.round((summary.confirmedRoles / totalRoles) * 100) : 0;
+  const phaseItems = roleFlowOrder
+    .map((roleId) => {
+      const employee = summary.employees.find((item) => item.id === roleId);
+      if (!employee) return "";
+      const status = roleStatus(roleId);
+      return `
+        <span class="${escapeHtml(status)}">
+          <b>${escapeHtml(employee.title || roleId)}</b>
+          <em>${escapeHtml(roleFlowLabel(roleId))}</em>
+        </span>
+      `;
+    })
+    .join("");
+  projectOverviewPanel.innerHTML = `
+    <section class="project-overview ${summary.level}">
+      <header>
+        <div>
+          <p class="eyebrow">项目进度总览</p>
+          <h3>${escapeHtml(workflow.project_name || "未命名项目")}</h3>
+          <p>${escapeHtml(summary.nextAction)}</p>
+        </div>
+        <div class="health-badge">
+          <strong>${summary.score}</strong>
+          <span>${summary.level === "healthy" ? "健康" : summary.level === "risk" ? "有风险" : "需关注"}</span>
+        </div>
+      </header>
+
+      <div class="overview-metrics">
+        <article>
+          <strong>${summary.generated}/${totalRoles}</strong>
+          <span>岗位已生成</span>
+          <i style="--progress:${generatedPercent}%"></i>
+        </article>
+        <article>
+          <strong>${summary.confirmedRoles}/${totalRoles}</strong>
+          <span>岗位已确认</span>
+          <i style="--progress:${confirmedPercent}%"></i>
+        </article>
+        <article>
+          <strong>${summary.issues.length}</strong>
+          <span>Backlog 任务</span>
+          <i style="--progress:${Math.min(100, summary.issues.length * 8)}%"></i>
+        </article>
+        <article>
+          <strong>${summary.currentExport ? `v${summary.currentExport.version}` : "未导出"}</strong>
+          <span>${escapeHtml(summary.currentExport ? deliveryStatusLabel(summary.currentExport.status) : "交付包状态")}</span>
+          <i style="--progress:${summary.currentExport?.status === "confirmed" ? 100 : summary.currentExport ? 62 : 18}%"></i>
+        </article>
+      </div>
+
+      <div class="phase-strip">
+        ${phaseItems}
+      </div>
+
+      <div class="overview-bottom">
+        <div>
+          <b>风险与阻塞</b>
+          ${
+            summary.blockers.length
+              ? `<ul>${summary.blockers.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+              : `<p>当前没有明显阻塞，建议继续推进交付确认和研发拆解。</p>`
+          }
+        </div>
+        <div>
+          <b>交付信号</b>
+          <p>变更任务 ${summary.changeIssues.length} 条，交付包 ${summary.exports.length} 个版本。</p>
+          <p>${escapeHtml(summary.currentExport?.customer_feedback || "暂无最新客户反馈。")}</p>
+        </div>
+      </div>
+    </section>
+  `;
 }
 
 function renderMetrics(values = {}) {
@@ -1305,6 +1429,7 @@ function renderWorkflow(workflow) {
   integrationStatus.textContent = workflow.generation_error
     ? `AI 生成失败：${workflow.generation_error}`
     : "";
+  renderProjectOverview(workflow);
   renderAgentEmployees(workflow.agent_employees || []);
 }
 
@@ -1416,6 +1541,8 @@ async function exportDeliveryPackage(format, button) {
       ? "HTML 交付包已导出，可在浏览器中打印或保存为 PDF。"
       : "Markdown 交付包已导出。";
     await loadDeliveryExportVersions().catch(() => {});
+    latestWorkflow.delivery_exports = deliveryExportVersions;
+    renderProjectOverview(latestWorkflow);
   } catch (error) {
     integrationStatus.textContent = error.message;
   } finally {
@@ -1447,6 +1574,7 @@ async function updateDeliveryPackageStatus(exportId, status) {
     latestWorkflow = data.workflow || latestWorkflow;
     deliveryExportVersions = data.exports || [];
     renderDeliveryExportPanel();
+    renderProjectOverview(latestWorkflow);
     renderBacklog(latestWorkflow.backlog_issues || []);
     integrationStatus.textContent =
       status === "confirmed"
@@ -2473,6 +2601,8 @@ async function selectProject(projectId) {
   projectTitle.textContent = data.project.name || "等待生成";
   modeLine.textContent = "当前项目尚未运行工作流";
   metrics.innerHTML = "";
+  renderProjectOverview(null);
+  renderDeliveryExportPanel([]);
   renderAgentEmployees([]);
   if (backlog) backlog.innerHTML = "";
   if (timeline) timeline.innerHTML = `

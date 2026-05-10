@@ -507,6 +507,185 @@ textarea:focus {
   font-weight: 800;
 }
 
+.project-overview-panel:empty {
+  display: none;
+}
+
+.project-overview {
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 16px;
+  padding: 18px 24px;
+}
+
+.project-overview header {
+  align-items: flex-start;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+}
+
+.project-overview h3 {
+  font-size: 22px;
+  margin-top: 4px;
+}
+
+.project-overview header p:not(.eyebrow),
+.overview-bottom p,
+.overview-bottom li {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 6px 0 0;
+}
+
+.health-badge {
+  align-items: center;
+  background: var(--accent-soft);
+  border: 1px solid #c8ded7;
+  border-radius: 8px;
+  color: var(--accent-dark);
+  display: grid;
+  min-width: 88px;
+  padding: 10px 12px;
+  text-align: center;
+}
+
+.project-overview.risk .health-badge {
+  background: var(--warn-soft);
+  border-color: #fed7aa;
+  color: var(--warn);
+}
+
+.project-overview.watch .health-badge {
+  background: #f7f5eb;
+  border-color: #e6dfbb;
+  color: #7c6b17;
+}
+
+.health-badge strong {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.health-badge span {
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.overview-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.overview-metrics article {
+  background: #fbfcfa;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.overview-metrics strong {
+  color: var(--ink);
+  font-size: 19px;
+}
+
+.overview-metrics span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.overview-metrics i {
+  background: #dfe7e2;
+  border-radius: 999px;
+  display: block;
+  height: 6px;
+  overflow: hidden;
+  position: relative;
+}
+
+.overview-metrics i::after {
+  background: var(--accent);
+  border-radius: inherit;
+  content: "";
+  inset: 0 auto 0 0;
+  position: absolute;
+  width: var(--progress);
+}
+
+.phase-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.phase-strip span {
+  background: #fbfcfa;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  min-height: 70px;
+  padding: 10px;
+}
+
+.phase-strip span.confirmed {
+  background: #f6fbf9;
+  border-color: #9dc7bd;
+}
+
+.phase-strip span.pending_generate {
+  border-color: #c8ded7;
+}
+
+.phase-strip span.pending_confirm {
+  background: #fffaf4;
+  border-color: #fed7aa;
+}
+
+.phase-strip span.locked {
+  opacity: 0.62;
+}
+
+.phase-strip b {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.phase-strip em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.overview-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.overview-bottom > div {
+  background: #fbfcfa;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.overview-bottom b {
+  color: var(--ink);
+}
+
+.overview-bottom ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
 .delivery-export-panel {
   display: flex;
   align-items: flex-start;
@@ -1744,6 +1923,9 @@ textarea:focus {
 
   .issue-list,
   .runtime-panel,
+  .overview-metrics,
+  .phase-strip,
+  .overview-bottom,
   .agent-progress,
   .agent-employee-card-grid,
   .agent-card-sections,
@@ -1783,6 +1965,7 @@ textarea:focus {
   .timeline,
   .backlog-panel,
   .prototype-panel,
+  .project-overview,
   .delivery-map,
   .delivery-export-panel,
   .notice,
