@@ -4093,6 +4093,7 @@ function publicDeliveryExport(record = {}) {
   const nextRecord = { ...record };
   delete nextRecord.review_token;
   delete nextRecord.readonly_token;
+  delete nextRecord.markdown_snapshot;
   return nextRecord;
 }
 
@@ -4218,6 +4219,18 @@ function buildDeliveryPackageMarkdown(workflow, exportRecord = {}) {
   lines.push("", "## 五、下一步", "", ...(workflow.next_actions || []).map((item) => `- ${item}`));
   if (exportRecord.customer_feedback) {
     lines.push("", "## 六、客户反馈", "", markdownEscape(exportRecord.customer_feedback));
+  }
+  if (exportRecord.change_summary) {
+    const summary = exportRecord.change_summary;
+    lines.push("", "## 七、版本变更说明", "");
+    lines.push(`- 对比基线：${summary.from_version ? `v${summary.from_version}` : "无"}`);
+    lines.push(`- 当前版本：v${exportRecord.version || "current"}`);
+    lines.push(`- 变更结论：${summary.headline || "本版本为当前交付快照。"}`);
+    if (summary.added?.length) lines.push("", "### 新增内容", "", ...summary.added.map((item) => `- ${item}`));
+    if (summary.removed?.length) lines.push("", "### 删除内容", "", ...summary.removed.map((item) => `- ${item}`));
+    if (summary.changed?.length) lines.push("", "### 修改内容", "", ...summary.changed.map((item) => `- ${item}`));
+    if (summary.customer_feedback_status) lines.push("", `- 客户反馈处理：${summary.customer_feedback_status}`);
+    if (summary.related_change_issues?.length) lines.push(`- 关联变更任务：${summary.related_change_issues.join("、")}`);
   }
   return `${lines.join("\n").trim()}\n`;
 }
@@ -4345,6 +4358,11 @@ function recordDeliveryExport(workflow, format = "markdown") {
     updated_at: new Date().toISOString(),
     exported_at: new Date().toISOString(),
   };
+  const previousRecord = exports[exports.length - 1] || null;
+  const markdownSnapshot = buildDeliveryPackageMarkdown(workflow, record);
+  record.markdown_snapshot = markdownSnapshot;
+  record.snapshot_hash = crypto.createHash("sha256").update(markdownSnapshot).digest("hex").slice(0, 16);
+  record.change_summary = buildVersionChangeSummary(workflow, previousRecord, record);
   workflow.delivery_exports = [...exports, record];
   appendAuditEvent(workflow, {
     type: "delivery_exported",
@@ -4364,6 +4382,79 @@ function deliveryExportFilename(workflow, record, format) {
     .replace(/\s+/g, "-")
     .slice(0, 48);
   return `${safeName}-v${record.version}.${format === "html" ? "html" : "md"}`;
+}
+
+function comparableMarkdownLines(markdown = "") {
+  return String(markdown)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("- 导出时间：") && !line.startsWith("- 交付包版本："));
+}
+
+function summarizeLine(line = "") {
+  return line.replace(/^#+\s*/, "").replace(/^-\s*/, "").slice(0, 120);
+}
+
+function snapshotForCompare(workflow, record) {
+  if (!record) return "";
+  return record.markdown_snapshot || buildDeliveryPackageMarkdown(workflow, { ...record, change_summary: null });
+}
+
+function buildVersionChangeSummary(workflow, fromRecord, toRecord) {
+  const fromLines = new Set(comparableMarkdownLines(snapshotForCompare(workflow, fromRecord)));
+  const toLines = new Set(comparableMarkdownLines(snapshotForCompare(workflow, toRecord)));
+  const added = [...toLines].filter((line) => !fromLines.has(line)).map(summarizeLine).slice(0, 8);
+  const removed = [...fromLines].filter((line) => !toLines.has(line)).map(summarizeLine).slice(0, 8);
+  const changed = [];
+  if (fromRecord && fromRecord.status !== toRecord.status) {
+    changed.push(`状态从「${deliveryExportStatusLabel(fromRecord.status)}」变为「${deliveryExportStatusLabel(toRecord.status)}」`);
+  }
+  if (fromRecord && (fromRecord.customer_feedback || "") !== (toRecord.customer_feedback || "")) {
+    changed.push("客户反馈内容发生变化");
+  }
+  const relatedChangeIssues = (workflow.backlog_issues || [])
+    .filter((issue) => (issue.labels || []).includes("customer-change") || /^CR-/.test(issue.key || ""))
+    .map((issue) => issue.key || issue.title)
+    .filter(Boolean)
+    .slice(0, 6);
+  const customerFeedbackStatus = toRecord.customer_feedback
+    ? toRecord.status === "needs_update"
+      ? "客户反馈已记录，等待交付团队处理。"
+      : "客户反馈已纳入当前交付版本。"
+    : relatedChangeIssues.length
+      ? "存在客户变更任务，请核对是否已处理。"
+      : "当前版本暂无客户反馈。";
+  const headline = fromRecord
+    ? `v${toRecord.version} 相比 v${fromRecord.version} 有 ${added.length} 项新增、${removed.length} 项删除、${changed.length} 项状态/反馈变化。`
+    : `v${toRecord.version} 是首个交付包版本。`;
+  return {
+    from_export_id: fromRecord?.id || "",
+    from_version: fromRecord?.version || null,
+    to_export_id: toRecord.id,
+    to_version: toRecord.version,
+    headline,
+    added,
+    removed,
+    changed,
+    customer_feedback_status: customerFeedbackStatus,
+    related_change_issues: relatedChangeIssues,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+function compareDeliveryVersions(workflow, fromId, toId) {
+  if (!workflow) throw new Error("还没有生成工作流，无法对比版本。");
+  const exports = workflowExportVersions(workflow);
+  if (exports.length < 1) throw new Error("还没有可对比的交付包版本。");
+  const toRecord = exports.find((item) => item.id === toId) || exports[exports.length - 1];
+  const toIndex = exports.findIndex((item) => item.id === toRecord.id);
+  const fromRecord = exports.find((item) => item.id === fromId) || exports[toIndex - 1] || null;
+  const summary = buildVersionChangeSummary(workflow, fromRecord, toRecord);
+  return {
+    from: fromRecord ? publicDeliveryExport(fromRecord) : null,
+    to: publicDeliveryExport(toRecord),
+    summary,
+  };
 }
 
 function createDeliveryChangeIssue(record, feedback) {
@@ -4927,6 +5018,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url === "/api/delivery-package/audit-log") {
       json(res, 200, { audit_log: workflowAuditLog(currentWorkflow()).slice(0, 40).map(publicAuditEvent) });
+      return;
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/delivery-package/compare")) {
+      const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+      try {
+        json(res, 200, compareDeliveryVersions(currentWorkflow(), url.searchParams.get("from"), url.searchParams.get("to")));
+      } catch (error) {
+        json(res, 400, { error: error.message });
+      }
       return;
     }
     if (req.method === "GET" && req.url.startsWith("/api/client-review")) {

@@ -21,6 +21,7 @@ const exportMarkdownButton = document.getElementById("exportMarkdownButton");
 const exportHtmlButton = document.getElementById("exportHtmlButton");
 const projectOverviewPanel = document.getElementById("projectOverviewPanel");
 const deliveryExportPanel = document.getElementById("deliveryExportPanel");
+const deliveryComparePanel = document.getElementById("deliveryComparePanel");
 const deliveryAuditPanel = document.getElementById("deliveryAuditPanel");
 const projectForm = document.getElementById("projectForm");
 const projectList = document.getElementById("projectList");
@@ -52,6 +53,7 @@ let requirementActionResult = null;
 let uiDesignerActionResult = null;
 let roleFlowState = { activeRoleId: "requirements-analyst", confirmed: {}, generated: {} };
 let deliveryExportVersions = [];
+let deliveryCompareState = null;
 let deliveryAuditLog = [];
 
 const roleFlowOrder = ["requirements-analyst", "product-manager", "ui-designer", "architect", "developer", "tester"];
@@ -1551,6 +1553,93 @@ async function loadDeliveryExportVersions() {
   const data = await readJsonResponse(response, "读取交付包版本失败");
   deliveryExportVersions = data.exports || [];
   renderDeliveryExportPanel();
+  renderDeliveryComparePanel();
+}
+
+function renderChangeList(title, items = []) {
+  if (!items.length) {
+    return `
+      <div class="compare-list">
+        <b>${escapeHtml(title)}</b>
+        <p>暂无</p>
+      </div>
+    `;
+  }
+  return `
+    <div class="compare-list">
+      <b>${escapeHtml(title)}</b>
+      <ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    </div>
+  `;
+}
+
+function renderDeliveryComparePanel(result = deliveryCompareState) {
+  if (!deliveryComparePanel) return;
+  if (!latestWorkflow || deliveryExportVersions.length < 2) {
+    deliveryComparePanel.innerHTML = "";
+    return;
+  }
+  const versions = deliveryExportVersions.slice().sort((a, b) => (a.version || 0) - (b.version || 0));
+  const latest = versions[versions.length - 1];
+  const previous = versions[versions.length - 2];
+  const fromId = result?.from?.id || previous?.id || "";
+  const toId = result?.to?.id || latest?.id || "";
+  const summary = result?.summary;
+  deliveryComparePanel.innerHTML = `
+    <section class="delivery-compare">
+      <header>
+        <div>
+          <p class="eyebrow">版本对比</p>
+          <h3>交付包变更说明</h3>
+        </div>
+        <div class="compare-controls">
+          <select id="compareFromSelect">
+            ${versions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === fromId ? "selected" : ""}>v${escapeHtml(item.version)} ${escapeHtml(item.label || "")}</option>`).join("")}
+          </select>
+          <span>→</span>
+          <select id="compareToSelect">
+            ${versions.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === toId ? "selected" : ""}>v${escapeHtml(item.version)} ${escapeHtml(item.label || "")}</option>`).join("")}
+          </select>
+          <button type="button" class="secondary" data-compare-versions>对比</button>
+        </div>
+      </header>
+      ${
+        summary
+          ? `
+            <article class="compare-result">
+              <strong>${escapeHtml(summary.headline || "版本对比已生成。")}</strong>
+              <div class="compare-grid">
+                ${renderChangeList("新增内容", summary.added || [])}
+                ${renderChangeList("删除内容", summary.removed || [])}
+                ${renderChangeList("修改内容", summary.changed || [])}
+              </div>
+              <div class="compare-foot">
+                <span>${escapeHtml(summary.customer_feedback_status || "暂无客户反馈状态。")}</span>
+                <span>关联变更任务：${escapeHtml((summary.related_change_issues || []).join("、") || "暂无")}</span>
+              </div>
+            </article>
+          `
+          : `<p class="compare-empty">选择两个版本后查看变更摘要。</p>`
+      }
+    </section>
+  `;
+}
+
+async function compareDeliveryVersions() {
+  const fromId = document.getElementById("compareFromSelect")?.value || "";
+  const toId = document.getElementById("compareToSelect")?.value || "";
+  if (!fromId || !toId || fromId === toId) {
+    integrationStatus.textContent = "请选择两个不同的交付包版本进行对比。";
+    return;
+  }
+  try {
+    const response = await fetch(`/api/delivery-package/compare?from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`);
+    deliveryCompareState = await readJsonResponse(response, "生成版本对比失败");
+    renderDeliveryComparePanel();
+    integrationStatus.textContent = "交付包版本对比已生成。";
+  } catch (error) {
+    integrationStatus.textContent = error.message;
+  }
 }
 
 function auditTypeLabel(type = "") {
@@ -1989,6 +2078,7 @@ renderWorkflow = function renderWorkflowWithPrototype(workflow) {
   deliveryExportVersions = Array.isArray(workflow.delivery_exports) ? workflow.delivery_exports : [];
   deliveryAuditLog = Array.isArray(workflow.delivery_audit_log) ? workflow.delivery_audit_log : [];
   renderDeliveryExportPanel();
+  renderDeliveryComparePanel();
   renderDeliveryAuditPanel();
   loadDeliveryExportVersions().catch(() => {});
   loadDeliveryAuditLog().catch(() => {});
@@ -2750,6 +2840,7 @@ async function selectProject(projectId) {
   metrics.innerHTML = "";
   renderProjectOverview(null);
   renderDeliveryExportPanel([]);
+  renderDeliveryComparePanel();
   renderDeliveryAuditPanel([]);
   renderAgentEmployees([]);
   if (backlog) backlog.innerHTML = "";
@@ -2844,6 +2935,12 @@ deliveryExportPanel?.addEventListener("click", (event) => {
   const statusButton = event.target.closest("[data-delivery-status]");
   if (!statusButton) return;
   updateDeliveryPackageStatus(statusButton.dataset.deliveryStatus, statusButton.dataset.statusValue);
+});
+
+deliveryComparePanel?.addEventListener("click", (event) => {
+  const compareButton = event.target.closest("[data-compare-versions]");
+  if (!compareButton) return;
+  compareDeliveryVersions();
 });
 
 agentEmployeeBoard?.addEventListener("click", (event) => {
