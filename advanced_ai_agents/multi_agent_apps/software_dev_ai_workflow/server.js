@@ -3998,6 +3998,41 @@ function workflowExportVersions(workflow = {}) {
   return Array.isArray(workflow.delivery_exports) ? workflow.delivery_exports : [];
 }
 
+function workflowAuditLog(workflow = {}) {
+  if (!workflow) return [];
+  return Array.isArray(workflow.delivery_audit_log) ? workflow.delivery_audit_log : [];
+}
+
+function publicAuditEvent(event = {}) {
+  return {
+    id: event.id,
+    type: event.type,
+    actor: event.actor,
+    message: event.message,
+    export_id: event.export_id || "",
+    export_version: event.export_version || "",
+    created_at: event.created_at,
+    metadata: event.metadata || {},
+  };
+}
+
+function appendAuditEvent(workflow, event = {}, options = {}) {
+  if (!workflow) return null;
+  const entry = {
+    id: `audit_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`,
+    type: event.type || "delivery_event",
+    actor: event.actor || "system",
+    message: event.message || "交付事件已记录",
+    export_id: event.export_id || "",
+    export_version: event.export_version || "",
+    created_at: new Date().toISOString(),
+    metadata: event.metadata || {},
+  };
+  workflow.delivery_audit_log = [entry, ...workflowAuditLog(workflow)].slice(0, 120);
+  if (options.persist !== false) saveWorkflowMutation(workflow);
+  return entry;
+}
+
 function makeReviewToken() {
   return crypto.randomBytes(16).toString("hex");
 }
@@ -4247,6 +4282,14 @@ function recordDeliveryExport(workflow, format = "markdown") {
     exported_at: new Date().toISOString(),
   };
   workflow.delivery_exports = [...exports, record];
+  appendAuditEvent(workflow, {
+    type: "delivery_exported",
+    actor: "delivery_manager",
+    message: `导出交付包 v${record.version}（${format === "html" ? "HTML/PDF" : "Markdown"}）。`,
+    export_id: record.id,
+    export_version: record.version,
+    metadata: { format },
+  }, { persist: false });
   saveWorkflowMutation(workflow);
   return record;
 }
@@ -4336,6 +4379,23 @@ function updateDeliveryExport(workflow, body = {}) {
     ];
   }
 
+  appendAuditEvent(workflow, {
+    type: status === "confirmed" ? "delivery_confirmed" : status === "needs_update" ? "delivery_needs_update" : "delivery_submitted",
+    actor: body.actor || "delivery_manager",
+    message:
+      status === "confirmed"
+        ? `交付包 v${nextRecord.version} 已确认通过并冻结。`
+        : status === "needs_update"
+          ? `交付包 v${nextRecord.version} 被标记为需修改。`
+          : `交付包 v${nextRecord.version} 已提交客户确认。`,
+    export_id: nextRecord.id,
+    export_version: nextRecord.version,
+    metadata: {
+      status,
+      feedback_length: customerFeedback.length,
+      change_issue_key: changeIssue?.key || "",
+    },
+  }, { persist: false });
   saveWorkflowMutation(workflow);
   return { export: nextRecord, exports: workflowExportVersions(workflow), change_issue: changeIssue, workflow };
 }
@@ -4372,6 +4432,7 @@ function buildClientReviewPayload(req, workflow, record, readonly = false) {
         backlog_count: issues.length,
         change_request_count: issues.filter((issue) => (issue.labels || []).includes("customer-change") || /^CR-/.test(issue.key || "")).length,
       },
+      audit_log: workflowAuditLog(workflow).slice(0, 12).map(publicAuditEvent),
     },
     links: {
       review_url: deliveryReviewUrl(req, currentRecord.review_token),
@@ -4727,11 +4788,25 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, { exports });
       return;
     }
+    if (req.method === "GET" && req.url === "/api/delivery-package/audit-log") {
+      json(res, 200, { audit_log: workflowAuditLog(currentWorkflow()).slice(0, 40).map(publicAuditEvent) });
+      return;
+    }
     if (req.method === "GET" && req.url.startsWith("/api/client-review")) {
       const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
       const token = url.searchParams.get("token") || "";
       const { workflow, record, readonly } = findDeliveryExportByToken(token);
       try {
+        if (token && record) {
+          appendAuditEvent(workflow, {
+            type: readonly ? "readonly_link_opened" : "review_link_opened",
+            actor: readonly ? "client_readonly" : "client",
+            message: `${readonly ? "只读" : "客户确认"}链接已打开：交付包 v${record.version}。`,
+            export_id: record.id,
+            export_version: record.version,
+            metadata: { readonly },
+          });
+        }
         json(res, 200, buildClientReviewPayload(req, workflow || currentWorkflow(), record, readonly));
       } catch (error) {
         json(res, 404, { error: error.message });
@@ -4745,9 +4820,20 @@ const server = http.createServer(async (req, res) => {
         if (body.token) {
           const found = findDeliveryExportByToken(body.token);
           if (!found.record) throw new Error("验收链接无效或已失效。");
-          if (found.readonly) throw new Error("该链接为只读链接，不能提交验收结果。");
+          if (found.readonly) {
+            appendAuditEvent(found.workflow, {
+              type: "readonly_submit_blocked",
+              actor: "client_readonly",
+              message: `只读链接尝试提交交付包 v${found.record.version}，已被拒绝。`,
+              export_id: found.record.id,
+              export_version: found.record.version,
+              metadata: { attempted_status: body.status || "" },
+            });
+            throw new Error("该链接为只读链接，不能提交验收结果。");
+          }
           workflow = found.workflow;
           body.export_id = found.record.id;
+          body.actor = "client";
         }
         json(res, 200, updateDeliveryExport(workflow, body));
       } catch (error) {
@@ -4770,6 +4856,16 @@ const server = http.createServer(async (req, res) => {
       }
       const format = url.searchParams.get("format") === "html" ? "html" : "markdown";
       const record = found?.record || recordDeliveryExport(workflow, format);
+      if (found?.record) {
+        appendAuditEvent(workflow, {
+          type: "delivery_downloaded",
+          actor: found.readonly ? "client_readonly" : "client",
+          message: `客户下载交付包 v${record.version}（${format === "html" ? "HTML/PDF" : "Markdown"}）。`,
+          export_id: record.id,
+          export_version: record.version,
+          metadata: { format, readonly: found.readonly },
+        });
+      }
       const filename = deliveryExportFilename(workflow, record, format);
       const body = format === "html"
         ? buildDeliveryPackageHtml(workflow, record)

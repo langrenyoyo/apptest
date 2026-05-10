@@ -813,6 +813,81 @@ textarea:focus {
   text-decoration: none;
 }
 
+.delivery-audit-panel:empty {
+  display: none;
+}
+
+.delivery-audit-log {
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  padding: 14px 24px;
+}
+
+.delivery-audit-log > p {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+.audit-head,
+.delivery-audit-log li {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.delivery-audit-log strong {
+  color: var(--ink);
+  display: block;
+  font-size: 15px;
+  margin-top: 3px;
+}
+
+.delivery-audit-log ol {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.delivery-audit-log li {
+  justify-content: flex-start;
+}
+
+.delivery-audit-log li > span {
+  background: var(--accent-soft);
+  border: 1px solid #c8ded7;
+  border-radius: 999px;
+  color: var(--accent-dark);
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 900;
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+
+.delivery-audit-log li div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.delivery-audit-log b {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.delivery-audit-log em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
 .runtime-panel {
   display: grid;
   grid-template-columns: minmax(220px, 0.75fr) minmax(0, 1.25fr);
@@ -1985,6 +2060,7 @@ textarea:focus {
   .project-overview,
   .delivery-map,
   .delivery-export-panel,
+  .delivery-audit-log,
   .notice,
   .runtime-panel {
     padding-left: 14px;

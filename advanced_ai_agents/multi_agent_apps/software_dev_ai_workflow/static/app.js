@@ -21,6 +21,7 @@ const exportMarkdownButton = document.getElementById("exportMarkdownButton");
 const exportHtmlButton = document.getElementById("exportHtmlButton");
 const projectOverviewPanel = document.getElementById("projectOverviewPanel");
 const deliveryExportPanel = document.getElementById("deliveryExportPanel");
+const deliveryAuditPanel = document.getElementById("deliveryAuditPanel");
 const projectForm = document.getElementById("projectForm");
 const projectList = document.getElementById("projectList");
 const projectIdInput = document.getElementById("projectIdInput");
@@ -51,6 +52,7 @@ let requirementActionResult = null;
 let uiDesignerActionResult = null;
 let roleFlowState = { activeRoleId: "requirements-analyst", confirmed: {}, generated: {} };
 let deliveryExportVersions = [];
+let deliveryAuditLog = [];
 
 const roleFlowOrder = ["requirements-analyst", "product-manager", "ui-designer", "architect", "developer", "tester"];
 const roleGenerationActionId = "generate-current-role";
@@ -1512,6 +1514,79 @@ async function loadDeliveryExportVersions() {
   renderDeliveryExportPanel();
 }
 
+function auditTypeLabel(type = "") {
+  return (
+    {
+      delivery_exported: "导出交付包",
+      delivery_submitted: "提交客户确认",
+      delivery_confirmed: "客户确认通过",
+      delivery_needs_update: "客户要求修改",
+      review_link_opened: "客户打开链接",
+      readonly_link_opened: "只读链接访问",
+      readonly_submit_blocked: "只读提交拦截",
+      delivery_downloaded: "下载交付包",
+    }[type] || "交付事件"
+  );
+}
+
+function renderDeliveryAuditPanel(events = deliveryAuditLog) {
+  if (!deliveryAuditPanel) return;
+  if (!latestWorkflow) {
+    deliveryAuditPanel.innerHTML = "";
+    return;
+  }
+  if (!events.length) {
+    deliveryAuditPanel.innerHTML = `
+      <section class="delivery-audit-log">
+        <div>
+          <p class="eyebrow">交付审计日志</p>
+          <strong>暂无审计事件</strong>
+        </div>
+        <p>导出、客户访问、确认、修改和冻结动作会自动记录在这里。</p>
+      </section>
+    `;
+    return;
+  }
+  deliveryAuditPanel.innerHTML = `
+    <section class="delivery-audit-log">
+      <div class="audit-head">
+        <div>
+          <p class="eyebrow">交付审计日志</p>
+          <strong>最近 ${Math.min(events.length, 8)} 条事件</strong>
+        </div>
+      </div>
+      <ol>
+        ${events
+          .slice(0, 8)
+          .map(
+            (event) => `
+              <li>
+                <span>${escapeHtml(auditTypeLabel(event.type))}</span>
+                <div>
+                  <b>${escapeHtml(event.message || "交付事件已记录")}</b>
+                  <em>${escapeHtml(event.actor || "system")} · ${escapeHtml(formatLocalDateTime(event.created_at))}</em>
+                </div>
+              </li>
+            `
+          )
+          .join("")}
+      </ol>
+    </section>
+  `;
+}
+
+async function loadDeliveryAuditLog() {
+  if (!latestWorkflow) {
+    deliveryAuditLog = [];
+    renderDeliveryAuditPanel();
+    return;
+  }
+  const response = await fetch("/api/delivery-package/audit-log");
+  const data = await readJsonResponse(response, "读取交付审计日志失败");
+  deliveryAuditLog = data.audit_log || [];
+  renderDeliveryAuditPanel();
+}
+
 async function exportDeliveryPackage(format, button) {
   if (!latestWorkflow) {
     integrationStatus.textContent = "请先运行 AI 工作流，再导出交付包。";
@@ -1545,6 +1620,7 @@ async function exportDeliveryPackage(format, button) {
       ? "HTML 交付包已导出，可在浏览器中打印或保存为 PDF。"
       : "Markdown 交付包已导出。";
     await loadDeliveryExportVersions().catch(() => {});
+    await loadDeliveryAuditLog().catch(() => {});
     latestWorkflow.delivery_exports = deliveryExportVersions;
     renderProjectOverview(latestWorkflow);
   } catch (error) {
@@ -1578,6 +1654,7 @@ async function updateDeliveryPackageStatus(exportId, status) {
     latestWorkflow = data.workflow || latestWorkflow;
     deliveryExportVersions = data.exports || [];
     renderDeliveryExportPanel();
+    await loadDeliveryAuditLog().catch(() => {});
     renderProjectOverview(latestWorkflow);
     renderBacklog(latestWorkflow.backlog_issues || []);
     integrationStatus.textContent =
@@ -1847,8 +1924,11 @@ function renderUiDesignerPanel(result = latestUiDesigner) {
 renderWorkflow = function renderWorkflowWithPrototype(workflow) {
   renderWorkflowBase(workflow);
   deliveryExportVersions = Array.isArray(workflow.delivery_exports) ? workflow.delivery_exports : [];
+  deliveryAuditLog = Array.isArray(workflow.delivery_audit_log) ? workflow.delivery_audit_log : [];
   renderDeliveryExportPanel();
+  renderDeliveryAuditPanel();
   loadDeliveryExportVersions().catch(() => {});
+  loadDeliveryAuditLog().catch(() => {});
 };
 
 async function loadRuntimeConfig() {
@@ -2607,6 +2687,7 @@ async function selectProject(projectId) {
   metrics.innerHTML = "";
   renderProjectOverview(null);
   renderDeliveryExportPanel([]);
+  renderDeliveryAuditPanel([]);
   renderAgentEmployees([]);
   if (backlog) backlog.innerHTML = "";
   if (timeline) timeline.innerHTML = `
