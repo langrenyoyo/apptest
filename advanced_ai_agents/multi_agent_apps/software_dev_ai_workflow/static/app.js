@@ -1490,16 +1490,55 @@ function renderDeliveryExportPanel(exports = deliveryExportVersions) {
                     </div>
                   `
               }
-              <div class="review-link-list">
-                <a href="${escapeHtml(item.review_url || "/client-review")}" target="_blank">客户确认链接</a>
-                <a href="${escapeHtml(item.readonly_url || "/client-review")}" target="_blank">只读查看链接</a>
-              </div>
+              <section class="review-link-manager">
+                <div class="link-row ${item.review_revoked ? "revoked" : ""}">
+                  <div>
+                    <b>客户确认链接</b>
+                    <em>${item.review_revoked ? "已作废" : "可提交"} · 最近访问 ${escapeHtml(formatLocalDateTime(item.review_last_accessed_at))}</em>
+                  </div>
+                  <div>
+                    ${item.review_url ? `<a href="${escapeHtml(item.review_url)}" target="_blank">打开</a>` : ""}
+                    ${item.review_url ? `<button type="button" class="secondary" data-copy-link="${escapeHtml(item.review_url)}">复制</button>` : ""}
+                    <button type="button" class="secondary" data-delivery-link="${escapeHtml(item.id)}" data-link-action="regenerate_review">重新生成</button>
+                    <button type="button" class="${item.review_revoked ? "secondary" : "warn"}" data-delivery-link="${escapeHtml(item.id)}" data-link-action="${item.review_revoked ? "restore_review" : "revoke_review"}">${item.review_revoked ? "恢复" : "作废"}</button>
+                  </div>
+                </div>
+                <div class="link-row ${item.readonly_revoked ? "revoked" : ""}">
+                  <div>
+                    <b>只读查看链接</b>
+                    <em>${item.readonly_revoked ? "已作废" : "只读"} · 最近访问 ${escapeHtml(formatLocalDateTime(item.readonly_last_accessed_at))}</em>
+                  </div>
+                  <div>
+                    ${item.readonly_url ? `<a href="${escapeHtml(item.readonly_url)}" target="_blank">打开</a>` : ""}
+                    ${item.readonly_url ? `<button type="button" class="secondary" data-copy-link="${escapeHtml(item.readonly_url)}">复制</button>` : ""}
+                    <button type="button" class="secondary" data-delivery-link="${escapeHtml(item.id)}" data-link-action="regenerate_readonly">重新生成</button>
+                    <button type="button" class="${item.readonly_revoked ? "secondary" : "warn"}" data-delivery-link="${escapeHtml(item.id)}" data-link-action="${item.readonly_revoked ? "restore_readonly" : "revoke_readonly"}">${item.readonly_revoked ? "恢复" : "作废"}</button>
+                  </div>
+                </div>
+              </section>
             </article>
           `
         )
         .join("")}
     </div>
   `;
+}
+
+async function copyTextToClipboard(value) {
+  if (!value) return;
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.setAttribute("readonly", "readonly");
+  input.style.position = "fixed";
+  input.style.left = "-9999px";
+  document.body.appendChild(input);
+  input.select();
+  document.execCommand("copy");
+  input.remove();
 }
 
 async function loadDeliveryExportVersions() {
@@ -1663,6 +1702,30 @@ async function updateDeliveryPackageStatus(exportId, status) {
         : status === "needs_update"
           ? "已记录客户修改意见，并生成变更任务。"
           : "交付包已提交客户确认。";
+  } catch (error) {
+    integrationStatus.textContent = error.message;
+  }
+}
+
+async function manageDeliveryLink(exportId, action) {
+  if (!latestWorkflow) {
+    integrationStatus.textContent = "请先运行 AI 工作流，再管理客户验收链接。";
+    return;
+  }
+  try {
+    const response = await fetch("/api/delivery-package/link", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ export_id: exportId, action }),
+    });
+    const data = await readJsonResponse(response, "管理客户验收链接失败");
+    deliveryExportVersions = data.exports || [];
+    deliveryAuditLog = data.audit_log || deliveryAuditLog;
+    latestWorkflow.delivery_exports = deliveryExportVersions;
+    renderDeliveryExportPanel();
+    renderDeliveryAuditPanel();
+    renderProjectOverview(latestWorkflow);
+    integrationStatus.textContent = "客户验收链接已更新。";
   } catch (error) {
     integrationStatus.textContent = error.message;
   }
@@ -2762,6 +2825,22 @@ backlog?.addEventListener("click", (event) => {
 });
 
 deliveryExportPanel?.addEventListener("click", (event) => {
+  const copyButton = event.target.closest("[data-copy-link]");
+  if (copyButton) {
+    copyTextToClipboard(copyButton.dataset.copyLink)
+      .then(() => {
+        integrationStatus.textContent = "客户验收链接已复制。";
+      })
+      .catch((error) => {
+        integrationStatus.textContent = error.message || "复制失败，请手动复制链接。";
+      });
+    return;
+  }
+  const linkButton = event.target.closest("[data-delivery-link]");
+  if (linkButton) {
+    manageDeliveryLink(linkButton.dataset.deliveryLink, linkButton.dataset.linkAction);
+    return;
+  }
   const statusButton = event.target.closest("[data-delivery-status]");
   if (!statusButton) return;
   updateDeliveryPackageStatus(statusButton.dataset.deliveryStatus, statusButton.dataset.statusValue);

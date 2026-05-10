@@ -4123,12 +4123,20 @@ function findDeliveryExportByToken(token = "") {
   for (const project of projects) {
     const workflow = project.latest_workflow;
     const exports = ensureDeliveryExportTokens(workflow);
-    const record = exports.find((item) => item.review_token === token || item.readonly_token === token);
+    const record = exports.find(
+      (item) =>
+        (!item.review_revoked && item.review_token === token) ||
+        (!item.readonly_revoked && item.readonly_token === token)
+    );
     if (record) return { workflow, record, readonly: record.readonly_token === token };
   }
   const workflow = currentWorkflow();
   const exports = ensureDeliveryExportTokens(workflow);
-  const record = exports.find((item) => item.review_token === token || item.readonly_token === token);
+  const record = exports.find(
+    (item) =>
+      (!item.review_revoked && item.review_token === token) ||
+      (!item.readonly_revoked && item.readonly_token === token)
+  );
   return record ? { workflow, record, readonly: record.readonly_token === token } : { workflow: null, record: null, readonly: false };
 }
 
@@ -4327,6 +4335,10 @@ function recordDeliveryExport(workflow, format = "markdown") {
     frozen: false,
     review_token: makeReviewToken(),
     readonly_token: makeReviewToken(),
+    review_revoked: false,
+    readonly_revoked: false,
+    review_last_accessed_at: "",
+    readonly_last_accessed_at: "",
     customer_feedback: "",
     submitted_at: "",
     confirmed_at: "",
@@ -4450,6 +4462,79 @@ function updateDeliveryExport(workflow, body = {}) {
   }, { persist: false });
   saveWorkflowMutation(workflow);
   return { export: nextRecord, exports: workflowExportVersions(workflow), change_issue: changeIssue, workflow };
+}
+
+function manageDeliveryReviewLink(workflow, body = {}) {
+  if (!workflow) throw new Error("还没有生成工作流，无法管理验收链接。");
+  ensureDeliveryExportTokens(workflow);
+  const exports = workflowExportVersions(workflow);
+  const exportIndex = exports.findIndex((item) => item.id === body.export_id);
+  if (exportIndex < 0) throw new Error("未找到交付包版本。");
+
+  const action = body.action || "";
+  const current = exports[exportIndex];
+  const nextRecord = { ...current, updated_at: new Date().toISOString() };
+  let message = "";
+  let type = "review_link_managed";
+  if (action === "regenerate_review") {
+    nextRecord.review_token = makeReviewToken();
+    nextRecord.review_revoked = false;
+    nextRecord.review_last_accessed_at = "";
+    message = `交付包 v${nextRecord.version} 的客户确认链接已重新生成。`;
+    type = "review_link_regenerated";
+  } else if (action === "regenerate_readonly") {
+    nextRecord.readonly_token = makeReviewToken();
+    nextRecord.readonly_revoked = false;
+    nextRecord.readonly_last_accessed_at = "";
+    message = `交付包 v${nextRecord.version} 的只读查看链接已重新生成。`;
+    type = "readonly_link_regenerated";
+  } else if (action === "revoke_review") {
+    nextRecord.review_revoked = true;
+    message = `交付包 v${nextRecord.version} 的客户确认链接已作废。`;
+    type = "review_link_revoked";
+  } else if (action === "revoke_readonly") {
+    nextRecord.readonly_revoked = true;
+    message = `交付包 v${nextRecord.version} 的只读查看链接已作废。`;
+    type = "readonly_link_revoked";
+  } else if (action === "restore_review") {
+    nextRecord.review_revoked = false;
+    message = `交付包 v${nextRecord.version} 的客户确认链接已恢复。`;
+    type = "review_link_restored";
+  } else if (action === "restore_readonly") {
+    nextRecord.readonly_revoked = false;
+    message = `交付包 v${nextRecord.version} 的只读查看链接已恢复。`;
+    type = "readonly_link_restored";
+  } else {
+    throw new Error("不支持的链接管理操作。");
+  }
+
+  const nextExports = [...exports];
+  nextExports[exportIndex] = nextRecord;
+  workflow.delivery_exports = nextExports;
+  appendAuditEvent(workflow, {
+    type,
+    actor: "delivery_manager",
+    message,
+    export_id: nextRecord.id,
+    export_version: nextRecord.version,
+    metadata: { action },
+  }, { persist: false });
+  saveWorkflowMutation(workflow);
+  return { export: nextRecord, exports: workflowExportVersions(workflow), audit_log: workflowAuditLog(workflow).slice(0, 40).map(publicAuditEvent) };
+}
+
+function markDeliveryLinkAccess(workflow, record, readonly = false) {
+  if (!workflow || !record) return;
+  const exports = workflowExportVersions(workflow);
+  const exportIndex = exports.findIndex((item) => item.id === record.id);
+  if (exportIndex < 0) return;
+  const nextRecord = {
+    ...exports[exportIndex],
+    [readonly ? "readonly_last_accessed_at" : "review_last_accessed_at"]: new Date().toISOString(),
+  };
+  const nextExports = [...exports];
+  nextExports[exportIndex] = nextRecord;
+  workflow.delivery_exports = nextExports;
 }
 
 function deliveryReviewUrl(req, token) {
@@ -4834,8 +4919,8 @@ const server = http.createServer(async (req, res) => {
       const workflow = currentWorkflow();
       const exports = ensureDeliveryExportTokens(workflow).map((item) => ({
         ...publicDeliveryExport(item),
-        review_url: deliveryReviewUrl(req, item.review_token),
-        readonly_url: deliveryReviewUrl(req, item.readonly_token),
+        review_url: item.review_revoked ? "" : deliveryReviewUrl(req, item.review_token),
+        readonly_url: item.readonly_revoked ? "" : deliveryReviewUrl(req, item.readonly_token),
       }));
       json(res, 200, { exports });
       return;
@@ -4850,6 +4935,7 @@ const server = http.createServer(async (req, res) => {
       const { workflow, record, readonly } = findDeliveryExportByToken(token);
       try {
         if (token && record) {
+          markDeliveryLinkAccess(workflow, record, readonly);
           appendAuditEvent(workflow, {
             type: readonly ? "readonly_link_opened" : "review_link_opened",
             actor: readonly ? "client_readonly" : "client",
@@ -4888,6 +4974,15 @@ const server = http.createServer(async (req, res) => {
           body.actor = "client";
         }
         json(res, 200, updateDeliveryExport(workflow, body));
+      } catch (error) {
+        json(res, 400, { error: error.message });
+      }
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/delivery-package/link") {
+      const body = await readBody(req);
+      try {
+        json(res, 200, manageDeliveryReviewLink(currentWorkflow(), body));
       } catch (error) {
         json(res, 400, { error: error.message });
       }
