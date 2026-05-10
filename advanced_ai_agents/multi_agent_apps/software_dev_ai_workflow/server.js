@@ -3998,6 +3998,17 @@ function workflowExportVersions(workflow = {}) {
   return Array.isArray(workflow.delivery_exports) ? workflow.delivery_exports : [];
 }
 
+function deliveryExportStatusLabel(status = "draft") {
+  return (
+    {
+      draft: "草稿",
+      pending_customer_confirmation: "待客户确认",
+      confirmed: "已确认",
+      needs_update: "需修改",
+    }[status] || "草稿"
+  );
+}
+
 function buildDeliveryPackageMarkdown(workflow, exportRecord = {}) {
   if (!workflow) return "还没有生成任何工作流。\n";
   const stages = Array.isArray(workflow.stages) ? workflow.stages : [];
@@ -4012,6 +4023,7 @@ function buildDeliveryPackageMarkdown(workflow, exportRecord = {}) {
     `- 客户：${workflow.client_name || "内部项目"}`,
     `- 生成时间：${workflow.created_at}`,
     `- 导出时间：${exportRecord.exported_at || new Date().toISOString()}`,
+    `- 当前状态：${deliveryExportStatusLabel(exportRecord.status)}`,
     `- 生成模式：${workflow.generation_mode || "deterministic"}`,
     ...(workflow.model ? [`- 模型：${workflow.model}`] : []),
     "",
@@ -4062,6 +4074,9 @@ function buildDeliveryPackageMarkdown(workflow, exportRecord = {}) {
   }
 
   lines.push("", "## 五、下一步", "", ...(workflow.next_actions || []).map((item) => `- ${item}`));
+  if (exportRecord.customer_feedback) {
+    lines.push("", "## 六、客户反馈", "", markdownEscape(exportRecord.customer_feedback));
+  }
   return `${lines.join("\n").trim()}\n`;
 }
 
@@ -4174,6 +4189,12 @@ function recordDeliveryExport(workflow, format = "markdown") {
     version: exports.length + 1,
     label: exports.length ? "客户确认版" : "需求初稿",
     format,
+    status: "draft",
+    frozen: false,
+    customer_feedback: "",
+    submitted_at: "",
+    confirmed_at: "",
+    updated_at: new Date().toISOString(),
     exported_at: new Date().toISOString(),
   };
   workflow.delivery_exports = [...exports, record];
@@ -4187,6 +4208,86 @@ function deliveryExportFilename(workflow, record, format) {
     .replace(/\s+/g, "-")
     .slice(0, 48);
   return `${safeName}-v${record.version}.${format === "html" ? "html" : "md"}`;
+}
+
+function createDeliveryChangeIssue(record, feedback) {
+  const version = record?.version || "unknown";
+  return normalizeIssueCard({
+    key: `CR-${String(version).padStart(2, "0")}`,
+    title: `处理交付包 v${version} 客户修改意见`,
+    body: `## 背景\n客户对交付包 v${version} 提出修改意见，需要进入下一轮需求澄清、方案调整和研发任务拆解。\n\n## 客户反馈\n${feedback || "客户未填写具体反馈。"}\n\n## 验收标准\n- 已逐条回应客户反馈。\n- 已更新相关 Agent 产物或 Backlog。\n- 已重新导出新版本交付包供客户确认。`,
+    labels: ["ai-workflow", "customer-change", "delivery"],
+    issue_type: "Change Request",
+    priority: "P1",
+    owner: "Delivery Manager",
+    estimate: "0.5-1 day",
+    affected_files: ["交付包", "需求说明", "Backlog"],
+    implementation_steps: [
+      "梳理客户反馈并归类为需求变更、范围澄清或验收问题",
+      "更新对应 Agent 产物和研发 Backlog",
+      "重新导出交付包并提交客户确认",
+    ],
+    acceptance_criteria: [
+      "客户反馈均有明确处理结论",
+      "新版本交付包包含变更说明",
+      "变更任务可被交付经理追踪",
+    ],
+    test_plan: ["人工复核客户反馈处理记录", "重新导出交付包版本"],
+    customer_feedback: feedback || "",
+    delivery_export_id: record?.id || "",
+  });
+}
+
+function updateDeliveryExport(workflow, body = {}) {
+  if (!workflow) throw new Error("还没有生成工作流，无法更新交付包状态。");
+  const exports = workflowExportVersions(workflow);
+  const exportIndex = exports.findIndex((item) => item.id === body.export_id);
+  if (exportIndex < 0) throw new Error("未找到交付包版本。");
+
+  const current = exports[exportIndex];
+  if (current.frozen || current.status === "confirmed") {
+    throw new Error("该交付包版本已确认冻结，不能再修改状态。");
+  }
+
+  const now = new Date().toISOString();
+  const status = body.status || current.status || "draft";
+  if (!["draft", "pending_customer_confirmation", "confirmed", "needs_update"].includes(status)) {
+    throw new Error("不支持的交付包状态。");
+  }
+
+  const customerFeedback = markdownEscape(body.customer_feedback ?? current.customer_feedback ?? "");
+  const nextRecord = {
+    ...current,
+    status,
+    customer_feedback: customerFeedback,
+    updated_at: now,
+  };
+  if (status === "pending_customer_confirmation") nextRecord.submitted_at = now;
+  if (status === "confirmed") {
+    nextRecord.confirmed_at = now;
+    nextRecord.frozen = true;
+  }
+
+  const nextExports = [...exports];
+  nextExports[exportIndex] = nextRecord;
+  workflow.delivery_exports = nextExports;
+
+  let changeIssue = null;
+  if (status === "needs_update") {
+    changeIssue = createDeliveryChangeIssue(nextRecord, customerFeedback);
+    const issues = Array.isArray(workflow.backlog_issues) ? workflow.backlog_issues : [];
+    const existingIndex = issues.findIndex((item) => item.key === changeIssue.key);
+    workflow.backlog_issues = existingIndex >= 0
+      ? issues.map((item, index) => (index === existingIndex ? changeIssue : item))
+      : [changeIssue, ...issues];
+    workflow.next_actions = [
+      `处理交付包 v${nextRecord.version} 的客户修改意见，并重新导出确认版本。`,
+      ...(workflow.next_actions || []).filter((item) => !String(item).includes(`交付包 v${nextRecord.version}`)),
+    ];
+  }
+
+  saveWorkflowMutation(workflow);
+  return { export: nextRecord, exports: workflowExportVersions(workflow), change_issue: changeIssue, workflow };
 }
 
 function findSandboxIssueBySlug(slug = "") {
@@ -4527,6 +4628,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url === "/api/delivery-package/versions") {
       json(res, 200, { exports: workflowExportVersions(currentWorkflow()) });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/delivery-package/status") {
+      const body = await readBody(req);
+      try {
+        json(res, 200, updateDeliveryExport(currentWorkflow(), body));
+      } catch (error) {
+        json(res, 400, { error: error.message });
+      }
       return;
     }
     if (req.method === "GET" && req.url.startsWith("/api/delivery-package/export")) {

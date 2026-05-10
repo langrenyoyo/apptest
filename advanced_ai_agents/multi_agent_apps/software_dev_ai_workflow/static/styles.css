@@ -531,32 +531,90 @@ textarea:focus {
 }
 
 .export-version-list {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  display: grid;
   gap: 8px;
   max-width: 720px;
+  min-width: min(100%, 520px);
 }
 
-.export-version-list span {
+.export-version-card {
   background: #fff;
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--ink);
   display: grid;
-  gap: 2px;
-  min-width: 160px;
-  padding: 8px 10px;
+  gap: 8px;
+  min-width: 260px;
+  padding: 10px;
 }
 
-.export-version-list b {
+.export-version-card.confirmed {
+  border-color: #9dc7bd;
+  background: #f6fbf9;
+}
+
+.export-version-card.needs_update {
+  border-color: #fed7aa;
+  background: #fffaf4;
+}
+
+.export-version-card header {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.export-version-card header div {
+  display: grid;
+  gap: 2px;
+}
+
+.export-version-card b {
   color: var(--accent-dark);
 }
 
-.export-version-list em {
-  color: var(--muted);
+.export-version-card mark {
+  background: var(--accent-soft);
+  border: 1px solid #c8ded7;
+  border-radius: 999px;
+  color: var(--accent-dark);
   font-size: 11px;
+  font-weight: 900;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.export-version-card.needs_update mark {
+  background: var(--warn-soft);
+  border-color: #fed7aa;
+  color: var(--warn);
+}
+
+.export-version-card em,
+.export-version-card small,
+.export-version-card p {
+  color: var(--muted);
+  font-size: 12px;
   font-style: normal;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.export-version-card textarea {
+  min-height: 68px;
+  padding: 8px 9px;
+}
+
+.export-version-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.export-version-actions button {
+  padding: 8px 10px;
+  font-size: 12px;
 }
 
 .runtime-panel {

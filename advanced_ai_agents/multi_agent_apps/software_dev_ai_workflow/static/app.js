@@ -178,6 +178,17 @@ function formatLocalDateTime(value) {
   return date.toLocaleString("zh-CN");
 }
 
+function deliveryStatusLabel(status = "draft") {
+  return (
+    {
+      draft: "草稿",
+      pending_customer_confirmation: "待客户确认",
+      confirmed: "已确认",
+      needs_update: "需修改",
+    }[status] || "草稿"
+  );
+}
+
 function renderMetrics(values = {}) {
   if (!metrics) return;
   metrics.innerHTML = Object.entries(values)
@@ -1326,11 +1337,33 @@ function renderDeliveryExportPanel(exports = deliveryExportVersions) {
         .slice(0, 5)
         .map(
           (item) => `
-            <span>
-              <b>v${escapeHtml(item.version || "-")}</b>
-              ${escapeHtml(item.label || "交付包")}
+            <article class="export-version-card ${escapeHtml(item.status || "draft")}">
+              <header>
+                <div>
+                  <b>v${escapeHtml(item.version || "-")}</b>
+                  <span>${escapeHtml(item.label || "交付包")}</span>
+                </div>
+                <mark>${escapeHtml(deliveryStatusLabel(item.status))}</mark>
+              </header>
               <em>${escapeHtml(item.format || "markdown")} · ${escapeHtml(formatLocalDateTime(item.exported_at))}</em>
-            </span>
+              ${
+                item.customer_feedback
+                  ? `<p>${escapeHtml(item.customer_feedback)}</p>`
+                  : `<p class="muted">暂无客户反馈。</p>`
+              }
+              ${
+                item.frozen
+                  ? `<small>该版本已确认冻结：${escapeHtml(formatLocalDateTime(item.confirmed_at))}</small>`
+                  : `
+                    <textarea data-delivery-feedback="${escapeHtml(item.id)}" placeholder="记录客户反馈或修改意见">${escapeHtml(item.customer_feedback || "")}</textarea>
+                    <div class="export-version-actions">
+                      <button type="button" class="secondary" data-delivery-status="${escapeHtml(item.id)}" data-status-value="pending_customer_confirmation">提交客户确认</button>
+                      <button type="button" data-delivery-status="${escapeHtml(item.id)}" data-status-value="confirmed">确认通过</button>
+                      <button type="button" class="warn" data-delivery-status="${escapeHtml(item.id)}" data-status-value="needs_update">需修改</button>
+                    </div>
+                  `
+              }
+            </article>
           `
         )
         .join("")}
@@ -1390,6 +1423,39 @@ async function exportDeliveryPackage(format, button) {
       button.disabled = false;
       button.textContent = original;
     }
+  }
+}
+
+async function updateDeliveryPackageStatus(exportId, status) {
+  if (!latestWorkflow) {
+    integrationStatus.textContent = "请先运行 AI 工作流，再更新交付包状态。";
+    return;
+  }
+  const feedbackInput = deliveryExportPanel?.querySelector(`[data-delivery-feedback="${exportId}"]`);
+  const customerFeedback = feedbackInput?.value || "";
+  try {
+    const response = await fetch("/api/delivery-package/status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        export_id: exportId,
+        status,
+        customer_feedback: customerFeedback,
+      }),
+    });
+    const data = await readJsonResponse(response, "更新交付包状态失败");
+    latestWorkflow = data.workflow || latestWorkflow;
+    deliveryExportVersions = data.exports || [];
+    renderDeliveryExportPanel();
+    renderBacklog(latestWorkflow.backlog_issues || []);
+    integrationStatus.textContent =
+      status === "confirmed"
+        ? `交付包 v${data.export?.version || ""} 已确认并冻结。`
+        : status === "needs_update"
+          ? "已记录客户修改意见，并生成变更任务。"
+          : "交付包已提交客户确认。";
+  } catch (error) {
+    integrationStatus.textContent = error.message;
   }
 }
 
@@ -2478,6 +2544,12 @@ backlog?.addEventListener("click", (event) => {
   if (commitButton) {
     generateCommitDraft(commitButton.dataset.commitKey);
   }
+});
+
+deliveryExportPanel?.addEventListener("click", (event) => {
+  const statusButton = event.target.closest("[data-delivery-status]");
+  if (!statusButton) return;
+  updateDeliveryPackageStatus(statusButton.dataset.deliveryStatus, statusButton.dataset.statusValue);
 });
 
 agentEmployeeBoard?.addEventListener("click", (event) => {
