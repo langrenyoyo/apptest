@@ -17,6 +17,9 @@ const businessUiPanel = document.getElementById("businessUiPanel");
 const businessUiStyleSelect = document.getElementById("businessUiStyleSelect");
 const uiDesignerButton = document.getElementById("uiDesignerButton");
 const uiDesignerPanel = document.getElementById("uiDesignerPanel");
+const exportMarkdownButton = document.getElementById("exportMarkdownButton");
+const exportHtmlButton = document.getElementById("exportHtmlButton");
+const deliveryExportPanel = document.getElementById("deliveryExportPanel");
 const projectForm = document.getElementById("projectForm");
 const projectList = document.getElementById("projectList");
 const projectIdInput = document.getElementById("projectIdInput");
@@ -46,6 +49,7 @@ let agentArtifactState = {};
 let requirementActionResult = null;
 let uiDesignerActionResult = null;
 let roleFlowState = { activeRoleId: "requirements-analyst", confirmed: {}, generated: {} };
+let deliveryExportVersions = [];
 
 const roleFlowOrder = ["requirements-analyst", "product-manager", "ui-designer", "architect", "developer", "tester"];
 const roleGenerationActionId = "generate-current-role";
@@ -165,6 +169,13 @@ function modeLabel(mode) {
     deterministic_fallback: "LLM Agent 生成失败",
   };
   return labels[mode] || mode || "未知模式";
+}
+
+function formatLocalDateTime(value) {
+  if (!value) return "未知时间";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("zh-CN");
 }
 
 function renderMetrics(values = {}) {
@@ -1288,6 +1299,100 @@ function renderWorkflow(workflow) {
 
 const renderWorkflowBase = renderWorkflow;
 
+function renderDeliveryExportPanel(exports = deliveryExportVersions) {
+  if (!deliveryExportPanel) return;
+  if (!latestWorkflow) {
+    deliveryExportPanel.innerHTML = "";
+    return;
+  }
+  const versions = Array.isArray(exports) ? exports.slice().reverse() : [];
+  if (!versions.length) {
+    deliveryExportPanel.innerHTML = `
+      <div>
+        <p class="eyebrow">交付包版本</p>
+        <strong>尚未导出</strong>
+      </div>
+      <span>生成工作流后可导出 Markdown 或 HTML/PDF，用于客户确认和内部归档。</span>
+    `;
+    return;
+  }
+  deliveryExportPanel.innerHTML = `
+    <div>
+      <p class="eyebrow">交付包版本</p>
+      <strong>已导出 ${versions.length} 个版本</strong>
+    </div>
+    <div class="export-version-list">
+      ${versions
+        .slice(0, 5)
+        .map(
+          (item) => `
+            <span>
+              <b>v${escapeHtml(item.version || "-")}</b>
+              ${escapeHtml(item.label || "交付包")}
+              <em>${escapeHtml(item.format || "markdown")} · ${escapeHtml(formatLocalDateTime(item.exported_at))}</em>
+            </span>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+async function loadDeliveryExportVersions() {
+  if (!latestWorkflow) {
+    deliveryExportVersions = [];
+    renderDeliveryExportPanel();
+    return;
+  }
+  const response = await fetch("/api/delivery-package/versions");
+  const data = await readJsonResponse(response, "读取交付包版本失败");
+  deliveryExportVersions = data.exports || [];
+  renderDeliveryExportPanel();
+}
+
+async function exportDeliveryPackage(format, button) {
+  if (!latestWorkflow) {
+    integrationStatus.textContent = "请先运行 AI 工作流，再导出交付包。";
+    return;
+  }
+  const original = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "导出中...";
+  }
+  try {
+    const response = await fetch(`/api/delivery-package/export?format=${encodeURIComponent(format)}`);
+    if (!response.ok) {
+      const data = await readJsonResponse(response, "导出交付包失败");
+      throw new Error(data.error || "导出交付包失败");
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const filename =
+      decodeURIComponent(disposition.match(/filename\*=UTF-8''([^;]+)/)?.[1] || "") ||
+      (format === "html" ? "delivery-package.html" : "delivery-package.md");
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    integrationStatus.textContent = format === "html"
+      ? "HTML 交付包已导出，可在浏览器中打印或保存为 PDF。"
+      : "Markdown 交付包已导出。";
+    await loadDeliveryExportVersions().catch(() => {});
+  } catch (error) {
+    integrationStatus.textContent = error.message;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+}
+
 function pageIssueName(issue = {}) {
   const title = issue.title || "";
   return (
@@ -1543,6 +1648,9 @@ function renderUiDesignerPanel(result = latestUiDesigner) {
 
 renderWorkflow = function renderWorkflowWithPrototype(workflow) {
   renderWorkflowBase(workflow);
+  deliveryExportVersions = Array.isArray(workflow.delivery_exports) ? workflow.delivery_exports : [];
+  renderDeliveryExportPanel();
+  loadDeliveryExportVersions().catch(() => {});
 };
 
 async function loadRuntimeConfig() {
@@ -2509,6 +2617,8 @@ jiraButton?.addEventListener("click", () => createIssues("jira"));
 prototypeButton?.addEventListener("click", generateProductPrototype);
 uiDesignerButton?.addEventListener("click", generateUiDesignerConcept);
 businessUiButton?.addEventListener("click", generateBusinessUiBoards);
+exportMarkdownButton?.addEventListener("click", () => exportDeliveryPackage("markdown", exportMarkdownButton));
+exportHtmlButton?.addEventListener("click", () => exportDeliveryPackage("html", exportHtmlButton));
 requireLoginView();
 loadRuntimeConfig();
 if (isLoggedIn()) loadProjects();

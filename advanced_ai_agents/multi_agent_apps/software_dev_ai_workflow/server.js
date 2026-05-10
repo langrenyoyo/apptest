@@ -3986,27 +3986,207 @@ ${JSON.stringify(applyResult || {}, null, 2)}
 
 function exportMarkdown(workflow) {
   if (!workflow) return "还没有生成任何工作流。\n";
+  return buildDeliveryPackageMarkdown(workflow, { version: null });
+}
+
+function markdownEscape(value) {
+  return String(value ?? "").replace(/\r\n/g, "\n").trim();
+}
+
+function workflowExportVersions(workflow = {}) {
+  if (!workflow) return [];
+  return Array.isArray(workflow.delivery_exports) ? workflow.delivery_exports : [];
+}
+
+function buildDeliveryPackageMarkdown(workflow, exportRecord = {}) {
+  if (!workflow) return "还没有生成任何工作流。\n";
+  const stages = Array.isArray(workflow.stages) ? workflow.stages : [];
+  const issues = Array.isArray(workflow.backlog_issues) ? workflow.backlog_issues.map(normalizeIssueCard) : [];
+  const employees = Array.isArray(workflow.agent_employees) ? workflow.agent_employees : [];
+  const exportLabel = exportRecord.version ? `v${exportRecord.version} ${exportRecord.label || "交付包"}` : "当前交付包";
   const lines = [
-    `# ${workflow.project_name} AI 软件交付工作流`,
+    `# ${workflow.project_name || "未命名项目"} AI 软件交付包`,
     "",
+    `- 交付包版本：${exportLabel}`,
     `- 工作流 ID：\`${workflow.workflow_id}\``,
     `- 客户：${workflow.client_name || "内部项目"}`,
     `- 生成时间：${workflow.created_at}`,
-    "",
-    "## 指标",
-    "",
-    ...Object.entries(workflow.metrics).map(([key, value]) => `- ${titleLabel(key)}：${value}`),
+    `- 导出时间：${exportRecord.exported_at || new Date().toISOString()}`,
     `- 生成模式：${workflow.generation_mode || "deterministic"}`,
+    ...(workflow.model ? [`- 模型：${workflow.model}`] : []),
+    "",
+    "## 一、项目概览",
+    "",
+    `- 项目名称：${workflow.project_name || "未命名项目"}`,
+    `- 客户名称：${workflow.client_name || "内部项目"}`,
+    `- 所属行业：${workflow.request?.industry || "未填写"}`,
+    `- 目标用户：${workflow.request?.target_users || "未填写"}`,
+    `- 技术栈：${workflow.request?.tech_stack || "未填写"}`,
+    "",
+    "### 业务目标",
+    "",
+    markdownEscape(workflow.request?.goal || "未填写业务目标。"),
+    "",
+    "### 关键指标",
+    "",
+    ...Object.entries(workflow.metrics || {}).map(([key, value]) => `- ${titleLabel(key)}：${value}`),
+    "",
+    "## 二、Agent 产物",
   ];
-  for (const item of workflow.stages) {
-    lines.push("", `## ${item.name}`, "", item.summary, "");
-    for (const output of item.artifacts) {
-      lines.push(`### ${output.title}`, "", output.content, "");
+
+  for (const item of stages) {
+    lines.push("", `### ${item.name || item.id}`, "", markdownEscape(item.summary || ""));
+    for (const output of item.artifacts || []) {
+      lines.push("", `#### ${output.title || "产物"}`, "", markdownEscape(output.content || ""));
     }
   }
-  lines.push("## 下一步", "", ...workflow.next_actions.map((item) => `- ${item}`));
-  lines.push("", "## Backlog Issues", "", ...(workflow.backlog_issues || []).map((issue) => formatIssueCardBody(issue)));
+
+  lines.push("", "## 三、岗位确认状态", "");
+  if (employees.length) {
+    for (const employee of employees) {
+      const outputs = employee.outputs || [];
+      const generated = outputs.some((item) => item.content);
+      lines.push(`- ${employee.title || employee.id}：${generated ? "已生成产物" : "待生成"}；交付物 ${outputs.length || 0} 项`);
+    }
+  } else {
+    lines.push("- 暂无岗位状态。");
+  }
+
+  lines.push("", "## 四、开发 Backlog", "");
+  if (issues.length) {
+    for (const issue of issues) {
+      lines.push(formatIssueCardBody(issue), "");
+    }
+  } else {
+    lines.push("暂无结构化 Backlog。");
+  }
+
+  lines.push("", "## 五、下一步", "", ...(workflow.next_actions || []).map((item) => `- ${item}`));
   return `${lines.join("\n").trim()}\n`;
+}
+
+function markdownToHtml(markdown) {
+  const inline = (textValue) =>
+    escapeHtml(textValue)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  const lines = String(markdown || "").split(/\r?\n/);
+  const htmlLines = [];
+  let inList = false;
+  let inCode = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (line.startsWith("```")) {
+      if (!inCode) {
+        if (inList) {
+          htmlLines.push("</ul>");
+          inList = false;
+        }
+        htmlLines.push("<pre><code>");
+        inCode = true;
+      } else {
+        htmlLines.push("</code></pre>");
+        inCode = false;
+      }
+      continue;
+    }
+    if (inCode) {
+      htmlLines.push(escapeHtml(rawLine));
+      continue;
+    }
+    if (!line.trim()) {
+      if (inList) {
+        htmlLines.push("</ul>");
+        inList = false;
+      }
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      if (inList) {
+        htmlLines.push("</ul>");
+        inList = false;
+      }
+      const level = Math.min(heading[1].length, 4);
+      htmlLines.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      continue;
+    }
+    if (line.startsWith("- ")) {
+      if (!inList) {
+        htmlLines.push("<ul>");
+        inList = true;
+      }
+      htmlLines.push(`<li>${inline(line.slice(2))}</li>`);
+      continue;
+    }
+    if (inList) {
+      htmlLines.push("</ul>");
+      inList = false;
+    }
+    htmlLines.push(`<p>${inline(line)}</p>`);
+  }
+  if (inList) htmlLines.push("</ul>");
+  if (inCode) htmlLines.push("</code></pre>");
+  return htmlLines.join("\n");
+}
+
+function buildDeliveryPackageHtml(workflow, exportRecord = {}) {
+  const markdown = buildDeliveryPackageMarkdown(workflow, exportRecord);
+  const title = `${workflow?.project_name || "AI 交付项目"}交付包`;
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f5f6f3; color: #17201b; font-family: "Segoe UI", Arial, sans-serif; }
+    main { max-width: 980px; margin: 0 auto; padding: 38px 24px 72px; }
+    h1, h2, h3, h4 { color: #14231d; line-height: 1.25; margin: 28px 0 12px; }
+    h1 { font-size: 34px; border-bottom: 2px solid #174237; padding-bottom: 18px; }
+    h2 { font-size: 24px; border-bottom: 1px solid #d8dfd5; padding-bottom: 8px; }
+    h3 { font-size: 19px; }
+    h4 { font-size: 16px; color: #0f766e; }
+    p, li { color: #405047; line-height: 1.72; font-size: 14px; }
+    ul { padding-left: 22px; }
+    code { background: #eaf1ed; border-radius: 4px; padding: 2px 5px; }
+    pre { background: #10231d; color: #e9f3ef; overflow: auto; padding: 16px; border-radius: 8px; }
+    .printbar { display: flex; justify-content: flex-end; gap: 10px; margin-bottom: 18px; }
+    button { border: 0; border-radius: 7px; background: #0f766e; color: #fff; cursor: pointer; font-weight: 800; padding: 10px 14px; }
+    @media print { .printbar { display: none; } body { background: #fff; } main { padding: 0; max-width: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="printbar"><button onclick="window.print()">打印 / 保存 PDF</button></div>
+    ${markdownToHtml(markdown)}
+  </main>
+</body>
+</html>`;
+}
+
+function recordDeliveryExport(workflow, format = "markdown") {
+  if (!workflow) throw new Error("还没有生成工作流，无法导出交付包。");
+  const exports = workflowExportVersions(workflow);
+  const record = {
+    id: `export_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`,
+    version: exports.length + 1,
+    label: exports.length ? "客户确认版" : "需求初稿",
+    format,
+    exported_at: new Date().toISOString(),
+  };
+  workflow.delivery_exports = [...exports, record];
+  saveWorkflowMutation(workflow);
+  return record;
+}
+
+function deliveryExportFilename(workflow, record, format) {
+  const safeName = String(workflow?.project_name || "delivery-package")
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .slice(0, 48);
+  return `${safeName}-v${record.version}.${format === "html" ? "html" : "md"}`;
 }
 
 function findSandboxIssueBySlug(slug = "") {
@@ -4343,6 +4523,31 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === "GET" && req.url === "/api/workflows/latest/export") {
       text(res, 200, exportMarkdown(currentWorkflow()));
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/delivery-package/versions") {
+      json(res, 200, { exports: workflowExportVersions(currentWorkflow()) });
+      return;
+    }
+    if (req.method === "GET" && req.url.startsWith("/api/delivery-package/export")) {
+      const workflow = currentWorkflow();
+      if (!workflow) {
+        json(res, 404, { error: "还没有生成工作流，无法导出交付包。" });
+        return;
+      }
+      const url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`);
+      const format = url.searchParams.get("format") === "html" ? "html" : "markdown";
+      const record = recordDeliveryExport(workflow, format);
+      const filename = deliveryExportFilename(workflow, record, format);
+      const body = format === "html"
+        ? buildDeliveryPackageHtml(workflow, record)
+        : buildDeliveryPackageMarkdown(workflow, record);
+      res.writeHead(200, {
+        "Content-Type": format === "html" ? "text/html; charset=utf-8" : "text/markdown; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${encodeURIComponent(filename)}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        "Content-Length": Buffer.byteLength(body),
+      });
+      res.end(body);
       return;
     }
     if (req.method === "GET" && req.url === "/api/workflows/latest") {
