@@ -82,6 +82,8 @@ const PORT = Number(process.env.PORT || 8901);
 let lastRun = null;
 let activeProjectId = "";
 let managedProjects = [];
+const sessions = new Map();
+const sessionCookieName = "ai_workflow_session";
 const dataRoot = path.join(__dirname, ".data");
 const stateFile = path.join(dataRoot, "state.json");
 const previewRoot = path.join(__dirname, ".preview");
@@ -354,6 +356,51 @@ function html(res, status, body) {
   res.end(body);
 }
 
+function setCookie(res, name, value, options = {}) {
+  const attributes = [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+  if (options.maxAge !== undefined) attributes.push(`Max-Age=${options.maxAge}`);
+  if (options.secure) attributes.push("Secure");
+  res.setHeader("Set-Cookie", attributes.join("; "));
+}
+
+function clearCookie(res, name) {
+  setCookie(res, name, "", { maxAge: 0 });
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie || "";
+  const cookies = {};
+  for (const part of header.split(";")) {
+    const [rawKey, ...rawValue] = part.trim().split("=");
+    if (!rawKey) continue;
+    cookies[rawKey] = decodeURIComponent(rawValue.join("=") || "");
+  }
+  return cookies;
+}
+
+function createSession(identity, username = "delivery.manager") {
+  const sessionId = crypto.randomBytes(24).toString("hex");
+  const session = {
+    id: sessionId,
+    username: String(username || "delivery.manager"),
+    identity: MEMBER_IDENTITY_PERMISSIONS[identity] ? identity : "delivery_manager",
+    created_at: new Date().toISOString(),
+  };
+  sessions.set(sessionId, session);
+  return session;
+}
+
+function requestSession(req) {
+  const sessionId = parseCookies(req)[sessionCookieName];
+  if (!sessionId) return null;
+  return sessions.get(sessionId) || null;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -373,6 +420,52 @@ function readBody(req) {
     req.on("end", () => resolve(body ? JSON.parse(body) : {}));
     req.on("error", reject);
   });
+}
+
+const MEMBER_IDENTITY_PERMISSIONS = {
+  delivery_manager: [
+    "project:create",
+    "workflow:run",
+    "agent:operate",
+    "delivery:export",
+    "delivery:manage",
+    "implementation:operate",
+    "integration:create",
+  ],
+  product_owner: ["workflow:run", "agent:operate"],
+  tech_lead: ["agent:operate", "implementation:operate", "integration:create"],
+  client_reviewer: [],
+  viewer: [],
+};
+
+const MEMBER_IDENTITY_LABELS = {
+  delivery_manager: "交付经理",
+  product_owner: "产品负责人",
+  tech_lead: "研发负责人",
+  client_reviewer: "客户代表",
+  viewer: "只读观察者",
+};
+
+function requestMemberIdentity(req) {
+  const session = requestSession(req);
+  if (session?.identity && MEMBER_IDENTITY_PERMISSIONS[session.identity]) return session.identity;
+  const value = String(req.headers["x-demo-role"] || "delivery_manager");
+  return MEMBER_IDENTITY_PERMISSIONS[value] ? value : "delivery_manager";
+}
+
+function canMember(req, permission) {
+  return MEMBER_IDENTITY_PERMISSIONS[requestMemberIdentity(req)].includes(permission);
+}
+
+function requireMemberPermission(req, res, permission, actionLabel) {
+  if (canMember(req, permission)) return true;
+  const identity = requestMemberIdentity(req);
+  json(res, 403, {
+    error: `${MEMBER_IDENTITY_LABELS[identity] || identity}不能${actionLabel}。请切换到有权限的成员身份。`,
+    member_identity: identity,
+    required_permission: permission,
+  });
+  return false;
 }
 
 function bullets(items) {
@@ -4836,7 +4929,45 @@ const server = http.createServer(async (req, res) => {
         rule_engine_enabled: false,
         github_enabled: Boolean(process.env.GITHUB_TOKEN && process.env.GITHUB_REPO),
         jira_enabled: Boolean(process.env.JIRA_BASE_URL && process.env.JIRA_EMAIL && process.env.JIRA_API_TOKEN && process.env.JIRA_PROJECT_KEY),
+        member_identities: Object.entries(MEMBER_IDENTITY_LABELS).map(([id, label]) => ({
+          id,
+          label,
+          permissions: MEMBER_IDENTITY_PERMISSIONS[id] || [],
+        })),
       });
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/auth/session") {
+      const session = requestSession(req);
+      const identity = requestMemberIdentity(req);
+      json(res, 200, {
+        authenticated: Boolean(session),
+        username: session?.username || "demo",
+        member_identity: identity,
+        member_label: MEMBER_IDENTITY_LABELS[identity] || identity,
+        permissions: MEMBER_IDENTITY_PERMISSIONS[identity] || [],
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/auth/login") {
+      const body = await readBody(req);
+      const identity = MEMBER_IDENTITY_PERMISSIONS[body.member_identity] ? body.member_identity : "delivery_manager";
+      const session = createSession(identity, body.username);
+      setCookie(res, sessionCookieName, session.id, { maxAge: 60 * 60 * 8 });
+      json(res, 200, {
+        authenticated: true,
+        username: session.username,
+        member_identity: session.identity,
+        member_label: MEMBER_IDENTITY_LABELS[session.identity] || session.identity,
+        permissions: MEMBER_IDENTITY_PERMISSIONS[session.identity] || [],
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/auth/logout") {
+      const sessionId = parseCookies(req)[sessionCookieName];
+      if (sessionId) sessions.delete(sessionId);
+      clearCookie(res, sessionCookieName);
+      json(res, 200, { authenticated: false });
       return;
     }
     if (req.method === "GET" && req.url === "/api/workflows/status") {
@@ -4880,6 +5011,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/projects") {
+      if (!requireMemberPermission(req, res, "project:create", "创建项目")) return;
       const body = cleanWorkflowInput(await readBody(req));
       const project = createManagedProject(body);
       json(res, 200, {
@@ -4907,24 +5039,28 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/workflows/run") {
+      if (!requireMemberPermission(req, res, "workflow:run", "运行 AI 工作流")) return;
       const body = cleanWorkflowInput(await readBody(req));
       lastRun = attachWorkflowToProject(await runWorkflow(body), body);
       json(res, 200, lastRun);
       return;
     }
     if (req.method === "POST" && req.url === "/api/integrations/github/issues") {
+      if (!requireMemberPermission(req, res, "integration:create", "创建 GitHub Issues")) return;
       const body = await readBody(req);
       const created = await createGitHubIssues(currentWorkflow(), body.limit);
       json(res, 200, { provider: "github", created });
       return;
     }
     if (req.method === "POST" && req.url === "/api/integrations/jira/issues") {
+      if (!requireMemberPermission(req, res, "integration:create", "创建 Jira Issues")) return;
       const body = await readBody(req);
       const created = await createJiraIssues(currentWorkflow(), body.limit);
       json(res, 200, { provider: "jira", created });
       return;
     }
     if (req.method === "POST" && req.url === "/api/roles/run-agent") {
+      if (!requireMemberPermission(req, res, "agent:operate", "操作 AI 岗位")) return;
       const body = await readBody(req);
       const workflow = currentWorkflow();
       const result = await runEmployeeRoleAction(workflow, body);
@@ -4933,42 +5069,49 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/implementation/plan") {
+      if (!requireMemberPermission(req, res, "implementation:operate", "生成实施方案")) return;
       const body = await readBody(req);
       const result = await generateImplementationPlan(currentWorkflow(), body.issue_key);
       json(res, 200, result);
       return;
     }
     if (req.method === "POST" && req.url === "/api/implementation/patch-draft") {
+      if (!requireMemberPermission(req, res, "implementation:operate", "生成 Patch 草案")) return;
       const body = await readBody(req);
       const result = await generatePatchDraft(currentWorkflow(), body.issue_key, body.implementation_plan);
       json(res, 200, result);
       return;
     }
     if (req.method === "POST" && req.url === "/api/implementation/generate-code") {
+      if (!requireMemberPermission(req, res, "implementation:operate", "生成代码草案")) return;
       const body = await readBody(req);
       const result = await generateCodeDraft(currentWorkflow(), body.issue_key);
       json(res, 200, result);
       return;
     }
     if (req.method === "POST" && req.url === "/api/implementation/apply-patch") {
+      if (!requireMemberPermission(req, res, "implementation:operate", "应用 Patch 草案")) return;
       const body = await readBody(req);
       const result = applyPatchDraft(body.patch);
       json(res, 200, result);
       return;
     }
     if (req.method === "POST" && req.url === "/api/implementation/ui-preview") {
+      if (!requireMemberPermission(req, res, "implementation:operate", "生成 UI 预览")) return;
       const body = await readBody(req);
       const result = createUiPreview(body.patch);
       json(res, 200, result);
       return;
     }
     if (req.method === "POST" && req.url === "/api/prototypes/generate") {
+      if (!requireMemberPermission(req, res, "agent:operate", "生成产品原型")) return;
       const workflow = currentWorkflow();
       const result = await generateProductPrototype(workflow);
       json(res, 200, result);
       return;
     }
     if (req.method === "POST" && req.url === "/api/business-ui/generate") {
+      if (!requireMemberPermission(req, res, "agent:operate", "生成业务 UI 图")) return;
       const body = await readBody(req);
       const workflow = currentWorkflow();
       if (!workflow) {
@@ -4980,6 +5123,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/ui-designer/generate") {
+      if (!requireMemberPermission(req, res, "agent:operate", "生成 UI 设计师效果图")) return;
       const body = await readBody(req);
       const workflow = currentWorkflow();
       if (!workflow) {
@@ -4991,12 +5135,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/implementation/revert-patch") {
+      if (!requireMemberPermission(req, res, "implementation:operate", "撤销 Patch")) return;
       const body = await readBody(req);
       const result = reversePatchDraft(body.patch);
       json(res, 200, result);
       return;
     }
     if (req.method === "POST" && req.url === "/api/implementation/commit-draft") {
+      if (!requireMemberPermission(req, res, "implementation:operate", "生成提交说明")) return;
       const body = await readBody(req);
       const result = await generateCommitDraft(body.patch, body.apply_result);
       json(res, 200, result);
@@ -5072,6 +5218,8 @@ const server = http.createServer(async (req, res) => {
           workflow = found.workflow;
           body.export_id = found.record.id;
           body.actor = "client";
+        } else if (!requireMemberPermission(req, res, "delivery:manage", "更新交付包状态")) {
+          return;
         }
         json(res, 200, updateDeliveryExport(workflow, body));
       } catch (error) {
@@ -5080,6 +5228,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/delivery-package/link") {
+      if (!requireMemberPermission(req, res, "delivery:manage", "管理客户验收链接")) return;
       const body = await readBody(req);
       try {
         json(res, 200, manageDeliveryReviewLink(currentWorkflow(), body));
@@ -5102,6 +5251,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const format = url.searchParams.get("format") === "html" ? "html" : "markdown";
+      if (!found?.record && !requireMemberPermission(req, res, "delivery:export", "导出交付包")) return;
       const record = found?.record || recordDeliveryExport(workflow, format);
       if (found?.record) {
         appendAuditEvent(workflow, {

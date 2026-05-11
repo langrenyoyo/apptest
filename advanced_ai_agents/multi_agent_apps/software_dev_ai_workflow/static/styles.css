@@ -213,6 +213,35 @@ button.warn {
   padding: 20px 22px;
 }
 
+.header-actions,
+.workspace-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.member-badge {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+
+.member-identity-hint {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+}
+
 .home-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -292,6 +321,7 @@ label {
 }
 
 input,
+select,
 textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -309,6 +339,7 @@ textarea {
 }
 
 input:focus,
+select:focus,
 textarea:focus {
   outline: 3px solid rgba(15, 118, 110, 0.16);
   border-color: var(--accent);

@@ -37,6 +37,17 @@
             密码
             <input name="password" type="password" value="demo123456" autocomplete="current-password" required />
           </label>
+          <label>
+            成员身份
+            <select id="memberIdentitySelect" name="member_identity">
+              <option value="delivery_manager">交付经理</option>
+              <option value="product_owner">产品负责人</option>
+              <option value="tech_lead">研发负责人</option>
+              <option value="client_reviewer">客户代表</option>
+              <option value="viewer">只读观察者</option>
+            </select>
+          </label>
+          <p id="memberIdentityHint" class="member-identity-hint"></p>
           <button type="submit">进入项目中心</button>
           <p class="login-hint">登录后先进入项目列表，选择项目后再运行 AI 交付流程。</p>
         </form>
@@ -52,7 +63,10 @@
               <p>以项目为索引管理业务需求、设计产物、研发任务和沙盒验证。</p>
             </div>
           </div>
-          <button type="button" id="logoutButton" class="secondary">退出</button>
+          <div class="header-actions">
+            <span id="homeMemberBadge" class="member-badge"></span>
+            <button type="button" id="logoutButton" class="secondary">退出</button>
+          </div>
         </header>
 
         <section class="home-summary">
@@ -105,9 +119,10 @@
 
       <section id="workflowView" class="workspace hidden">
         <aside class="panel form-panel">
-          <div class="workspace-nav">
-            <button type="button" id="backToProjectsButton" class="secondary">返回项目列表</button>
-          </div>
+            <div class="workspace-nav">
+              <button type="button" id="backToProjectsButton" class="secondary">返回项目列表</button>
+              <span id="workflowMemberBadge" class="member-badge"></span>
+            </div>
           <div class="brand">
             <span class="mark">AI</span>
             <div>

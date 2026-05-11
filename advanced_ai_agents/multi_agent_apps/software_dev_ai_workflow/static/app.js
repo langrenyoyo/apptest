@@ -35,6 +35,10 @@ const logoutButton = document.getElementById("logoutButton");
 const backToProjectsButton = document.getElementById("backToProjectsButton");
 const projectSearchInput = document.getElementById("projectSearchInput");
 const activeProjectLine = document.getElementById("activeProjectLine");
+const memberIdentitySelect = document.getElementById("memberIdentitySelect");
+const memberIdentityHint = document.getElementById("memberIdentityHint");
+const homeMemberBadge = document.getElementById("homeMemberBadge");
+const workflowMemberBadge = document.getElementById("workflowMemberBadge");
 
 let latestWorkflow = null;
 let statusTimer = null;
@@ -55,9 +59,38 @@ let roleFlowState = { activeRoleId: "requirements-analyst", confirmed: {}, gener
 let deliveryExportVersions = [];
 let deliveryCompareState = null;
 let deliveryAuditLog = [];
+let sessionState = null;
 
 const roleFlowOrder = ["requirements-analyst", "product-manager", "ui-designer", "architect", "developer", "tester"];
 const roleGenerationActionId = "generate-current-role";
+const memberIdentityStorageKey = "aiWorkflowMemberIdentity";
+const memberIdentityProfiles = {
+  delivery_manager: {
+    label: "交付经理",
+    description: "可以管理项目流程、导出交付包、管理客户验收链接和确认交付状态。",
+    permissions: ["project:create", "workflow:run", "agent:operate", "delivery:export", "delivery:manage", "implementation:operate", "integration:create"],
+  },
+  product_owner: {
+    label: "产品负责人",
+    description: "可以运行需求与产品阶段，确认 AI 岗位产物，查看交付材料。",
+    permissions: ["workflow:run", "agent:operate"],
+  },
+  tech_lead: {
+    label: "研发负责人",
+    description: "可以推进 AI 岗位产物、生成研发实施方案、代码草案和本地 Patch。",
+    permissions: ["agent:operate", "implementation:operate", "integration:create"],
+  },
+  client_reviewer: {
+    label: "客户代表",
+    description: "只能查看项目交付信息，验收请使用客户确认链接完成。",
+    permissions: [],
+  },
+  viewer: {
+    label: "只读观察者",
+    description: "只能查看项目和交付进度，不能生成、确认或修改内容。",
+    permissions: [],
+  },
+};
 
 function showView(name) {
   authView?.classList.toggle("hidden", name !== "auth");
@@ -66,11 +99,63 @@ function showView(name) {
 }
 
 function isLoggedIn() {
-  return localStorage.getItem("aiWorkflowLoggedIn") === "true";
+  return Boolean(sessionState?.authenticated) || localStorage.getItem("aiWorkflowLoggedIn") === "true";
+}
+
+function currentMemberIdentity() {
+  if (sessionState?.member_identity && memberIdentityProfiles[sessionState.member_identity]) {
+    return sessionState.member_identity;
+  }
+  const stored = localStorage.getItem(memberIdentityStorageKey) || "delivery_manager";
+  return memberIdentityProfiles[stored] ? stored : "delivery_manager";
+}
+
+function currentMemberProfile() {
+  return memberIdentityProfiles[currentMemberIdentity()];
+}
+
+function hasPermission(permission) {
+  return currentMemberProfile().permissions.includes(permission);
+}
+
+function authHeaders(extra = {}) {
+  return { ...extra };
+}
+
+function blockedByPermission(permission, actionLabel = "执行该操作") {
+  if (hasPermission(permission)) return false;
+  integrationStatus.textContent = `${currentMemberProfile().label}不能${actionLabel}。请切换到有权限的成员身份。`;
+  return true;
+}
+
+function renderMemberIdentityUi() {
+  const identity = currentMemberIdentity();
+  const profile = currentMemberProfile();
+  if (memberIdentitySelect) memberIdentitySelect.value = identity;
+  if (memberIdentityHint) memberIdentityHint.textContent = profile.description;
+  const badgeText = `成员身份：${profile.label}`;
+  if (homeMemberBadge) homeMemberBadge.textContent = badgeText;
+  if (workflowMemberBadge) workflowMemberBadge.textContent = badgeText;
+  document.body.dataset.memberIdentity = identity;
+  applyMemberPermissionState();
 }
 
 function requireLoginView() {
   showView(isLoggedIn() ? "projects" : "auth");
+  renderMemberIdentityUi();
+}
+
+async function refreshSession() {
+  try {
+    const response = await fetch("/api/auth/session");
+    sessionState = await response.json();
+    if (sessionState?.member_identity) {
+      localStorage.setItem(memberIdentityStorageKey, sessionState.member_identity);
+    }
+  } catch {
+    sessionState = null;
+  }
+  requireLoginView();
 }
 
 function roleFlowIndex(roleId) {
@@ -377,6 +462,7 @@ async function loadProjects() {
 
 async function createProject(event) {
   event.preventDefault();
+  if (blockedByPermission("project:create", "创建项目")) return;
   const button = projectForm.querySelector("button");
   const original = button.textContent;
   button.disabled = true;
@@ -385,7 +471,7 @@ async function createProject(event) {
   try {
     const response = await fetch("/api/projects", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(formToJson(projectForm)),
     });
     const data = await response.json();
@@ -1162,9 +1248,11 @@ function renderAgentEmployees(employees = []) {
     if (!actions.length) return "";
     const locked = !isRoleUnlocked(employee.id);
     const generated = isRoleGenerated(employee.id);
+    const canOperateAgent = hasPermission("agent:operate");
     return `
       <section class="agent-action-section ${locked ? "locked" : ""}">
         <b>岗位动作 · ${escapeHtml(roleFlowLabel(employee.id))}</b>
+        ${!canOperateAgent ? `<p class="role-lock-note">当前成员身份只能查看 AI 岗位产物，不能生成或确认。</p>` : ""}
         ${locked ? `<p class="role-lock-note">请先确认上游岗位产物，再进入该岗位生产。</p>` : ""}
         ${!locked && !generated ? `<p class="role-lock-note">该岗位已解锁，点击“生成${escapeHtml(employee.title || "当前岗位")}产物”后才会调用 LLM。</p>` : ""}
         ${
@@ -1177,7 +1265,7 @@ function renderAgentEmployees(employees = []) {
         }
         <div class="agent-action-list">
           ${
-            !locked && !generated
+            canOperateAgent && !locked && !generated
               ? `<button type="button" data-agent-action="${roleGenerationActionId}">
                   生成${escapeHtml(employee.title || "当前岗位")}产物
                 </button>`
@@ -1186,7 +1274,7 @@ function renderAgentEmployees(employees = []) {
           ${actions
             .map(
               (action) => `
-                <button type="button" data-agent-action="${escapeHtml(action.id)}" ${locked || !generated ? "disabled" : ""}>
+                <button type="button" data-agent-action="${escapeHtml(action.id)}" ${!canOperateAgent || locked || !generated ? "disabled" : ""}>
                   ${escapeHtml(action.label || "执行")}
                 </button>
                 ${action.description ? `<p>${escapeHtml(action.description)}</p>` : ""}
@@ -1421,6 +1509,7 @@ function renderAgentEmployees(employees = []) {
 }
 
 function renderWorkflow(workflow) {
+  renderMemberIdentityUi();
   latestWorkflow = workflow;
   selectedPageIssueKey = "";
   selectedAgentEmployeeId = "";
@@ -1456,6 +1545,7 @@ function renderDeliveryExportPanel(exports = deliveryExportVersions) {
     `;
     return;
   }
+  const canManageDelivery = hasPermission("delivery:manage");
   deliveryExportPanel.innerHTML = `
     <div>
       <p class="eyebrow">交付包版本</p>
@@ -1483,14 +1573,14 @@ function renderDeliveryExportPanel(exports = deliveryExportVersions) {
               ${
                 item.frozen
                   ? `<small>该版本已确认冻结：${escapeHtml(formatLocalDateTime(item.confirmed_at))}</small>`
-                  : `
+                  : canManageDelivery ? `
                     <textarea data-delivery-feedback="${escapeHtml(item.id)}" placeholder="记录客户反馈或修改意见">${escapeHtml(item.customer_feedback || "")}</textarea>
                     <div class="export-version-actions">
                       <button type="button" class="secondary" data-delivery-status="${escapeHtml(item.id)}" data-status-value="pending_customer_confirmation">提交客户确认</button>
                       <button type="button" data-delivery-status="${escapeHtml(item.id)}" data-status-value="confirmed">确认通过</button>
                       <button type="button" class="warn" data-delivery-status="${escapeHtml(item.id)}" data-status-value="needs_update">需修改</button>
                     </div>
-                  `
+                  ` : `<small>当前成员身份仅可查看交付状态，不能修改验收结果。</small>`
               }
               <section class="review-link-manager">
                 <div class="link-row ${item.review_revoked ? "revoked" : ""}">
@@ -1501,8 +1591,8 @@ function renderDeliveryExportPanel(exports = deliveryExportVersions) {
                   <div>
                     ${item.review_url ? `<a href="${escapeHtml(item.review_url)}" target="_blank">打开</a>` : ""}
                     ${item.review_url ? `<button type="button" class="secondary" data-copy-link="${escapeHtml(item.review_url)}">复制</button>` : ""}
-                    <button type="button" class="secondary" data-delivery-link="${escapeHtml(item.id)}" data-link-action="regenerate_review">重新生成</button>
-                    <button type="button" class="${item.review_revoked ? "secondary" : "warn"}" data-delivery-link="${escapeHtml(item.id)}" data-link-action="${item.review_revoked ? "restore_review" : "revoke_review"}">${item.review_revoked ? "恢复" : "作废"}</button>
+                    ${canManageDelivery ? `<button type="button" class="secondary" data-delivery-link="${escapeHtml(item.id)}" data-link-action="regenerate_review">重新生成</button>` : ""}
+                    ${canManageDelivery ? `<button type="button" class="${item.review_revoked ? "secondary" : "warn"}" data-delivery-link="${escapeHtml(item.id)}" data-link-action="${item.review_revoked ? "restore_review" : "revoke_review"}">${item.review_revoked ? "恢复" : "作废"}</button>` : ""}
                   </div>
                 </div>
                 <div class="link-row ${item.readonly_revoked ? "revoked" : ""}">
@@ -1513,8 +1603,8 @@ function renderDeliveryExportPanel(exports = deliveryExportVersions) {
                   <div>
                     ${item.readonly_url ? `<a href="${escapeHtml(item.readonly_url)}" target="_blank">打开</a>` : ""}
                     ${item.readonly_url ? `<button type="button" class="secondary" data-copy-link="${escapeHtml(item.readonly_url)}">复制</button>` : ""}
-                    <button type="button" class="secondary" data-delivery-link="${escapeHtml(item.id)}" data-link-action="regenerate_readonly">重新生成</button>
-                    <button type="button" class="${item.readonly_revoked ? "secondary" : "warn"}" data-delivery-link="${escapeHtml(item.id)}" data-link-action="${item.readonly_revoked ? "restore_readonly" : "revoke_readonly"}">${item.readonly_revoked ? "恢复" : "作废"}</button>
+                    ${canManageDelivery ? `<button type="button" class="secondary" data-delivery-link="${escapeHtml(item.id)}" data-link-action="regenerate_readonly">重新生成</button>` : ""}
+                    ${canManageDelivery ? `<button type="button" class="${item.readonly_revoked ? "secondary" : "warn"}" data-delivery-link="${escapeHtml(item.id)}" data-link-action="${item.readonly_revoked ? "restore_readonly" : "revoke_readonly"}">${item.readonly_revoked ? "恢复" : "作废"}</button>` : ""}
                   </div>
                 </div>
               </section>
@@ -1720,13 +1810,16 @@ async function exportDeliveryPackage(format, button) {
     integrationStatus.textContent = "请先运行 AI 工作流，再导出交付包。";
     return;
   }
+  if (blockedByPermission("delivery:export", "导出交付包")) return;
   const original = button?.textContent || "";
   if (button) {
     button.disabled = true;
     button.textContent = "导出中...";
   }
   try {
-    const response = await fetch(`/api/delivery-package/export?format=${encodeURIComponent(format)}`);
+    const response = await fetch(`/api/delivery-package/export?format=${encodeURIComponent(format)}`, {
+      headers: authHeaders(),
+    });
     if (!response.ok) {
       const data = await readJsonResponse(response, "导出交付包失败");
       throw new Error(data.error || "导出交付包失败");
@@ -1766,12 +1859,13 @@ async function updateDeliveryPackageStatus(exportId, status) {
     integrationStatus.textContent = "请先运行 AI 工作流，再更新交付包状态。";
     return;
   }
+  if (blockedByPermission("delivery:manage", "更新交付包状态")) return;
   const feedbackInput = deliveryExportPanel?.querySelector(`[data-delivery-feedback="${exportId}"]`);
   const customerFeedback = feedbackInput?.value || "";
   try {
     const response = await fetch("/api/delivery-package/status", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         export_id: exportId,
         status,
@@ -1801,10 +1895,11 @@ async function manageDeliveryLink(exportId, action) {
     integrationStatus.textContent = "请先运行 AI 工作流，再管理客户验收链接。";
     return;
   }
+  if (blockedByPermission("delivery:manage", "管理客户验收链接")) return;
   try {
     const response = await fetch("/api/delivery-package/link", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ export_id: exportId, action }),
     });
     const data = await readJsonResponse(response, "管理客户验收链接失败");
@@ -2128,6 +2223,7 @@ function startStatusPolling() {
 }
 
 async function createIssues(provider) {
+  if (blockedByPermission("integration:create", `创建 ${provider === "github" ? "GitHub" : "Jira"} Issues`)) return;
   const button = provider === "github" ? githubButton : jiraButton;
   if (!button) return;
   if (!latestWorkflow) {
@@ -2143,7 +2239,7 @@ async function createIssues(provider) {
   try {
     const response = await fetch(`/api/integrations/${provider}/issues`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ limit: 20 }),
     });
     const data = await response.json();
@@ -2167,6 +2263,7 @@ async function generateProductPrototype(triggerButton = prototypeButton) {
     integrationStatus.textContent = "请先运行 AI 工作流，再生成产品原型。";
     return;
   }
+  if (blockedByPermission("agent:operate", "生成产品原型")) return;
 
   const original = triggerButton?.textContent || "";
   if (triggerButton) {
@@ -2180,7 +2277,7 @@ async function generateProductPrototype(triggerButton = prototypeButton) {
   try {
     const response = await fetch("/api/prototypes/generate", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ workflow_id: latestWorkflow.workflow_id }),
     });
     const data = await response.json();
@@ -2199,6 +2296,19 @@ async function generateProductPrototype(triggerButton = prototypeButton) {
   }
 }
 
+function applyMemberPermissionState() {
+  const canCreateProject = hasPermission("project:create");
+  const canRunWorkflow = hasPermission("workflow:run");
+  const canExportDelivery = hasPermission("delivery:export");
+  const canCreateIntegration = hasPermission("integration:create");
+  projectForm?.querySelector("button[type='submit']")?.toggleAttribute("disabled", !canCreateProject);
+  runButton?.toggleAttribute("disabled", !canRunWorkflow);
+  exportMarkdownButton?.toggleAttribute("disabled", !canExportDelivery);
+  exportHtmlButton?.toggleAttribute("disabled", !canExportDelivery);
+  githubButton?.toggleAttribute("disabled", !canCreateIntegration);
+  jiraButton?.toggleAttribute("disabled", !canCreateIntegration);
+}
+
 function getEmployeeById(id) {
   return (latestWorkflow?.agent_employees || []).find((employee) => employee.id === id);
 }
@@ -2210,7 +2320,7 @@ function requirementOutputs() {
 async function runEmployeeRoleAgent(roleId, actionId, extra = {}, options = {}) {
   const response = await fetch("/api/roles/run-agent", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ role_id: roleId, action_id: actionId, extra, ...options }),
   });
   return readJsonResponse(response, "岗位 Agent 生成失败");
@@ -2229,6 +2339,7 @@ async function generateCurrentRole(roleId) {
     integrationStatus.textContent = "请先运行 AI 工作流，再生成岗位产物。";
     return;
   }
+  if (blockedByPermission("agent:operate", "生成 AI 岗位产物")) return;
   if (!isRoleUnlocked(roleId)) {
     integrationStatus.textContent = "请先确认上游岗位产物，再生成当前岗位产物。";
     return;
@@ -2258,6 +2369,7 @@ async function runRequirementAnalysisAction(actionId) {
     integrationStatus.textContent = "请先运行 AI 工作流，再操作需求分析师卡片。";
     return;
   }
+  if (blockedByPermission("agent:operate", "操作 AI 岗位")) return;
 
   const outputs = requirementOutputs();
   if (actionId === "generate-requirement-analysis-report") {
@@ -2337,6 +2449,7 @@ async function handoffUiDesignToDeveloper() {
     integrationStatus.textContent = "请先运行 AI 工作流，再交接 UI 设计稿。";
     return;
   }
+  if (blockedByPermission("agent:operate", "确认 AI 岗位产物")) return;
   markEmployeeOutputsConfirmed("ui-designer");
   uiDesignerActionResult = {
     title: "UI 设计稿已确认并交接开发人员",
@@ -2351,11 +2464,13 @@ async function handoffProductBaseline() {
     integrationStatus.textContent = "请先运行 AI 工作流，再确认产品产物。";
     return;
   }
+  if (blockedByPermission("agent:operate", "确认 AI 岗位产物")) return;
   markEmployeeOutputsConfirmed("product-manager");
   confirmRoleAndAdvance("product-manager", "产品产物已确认，UI 设计师已解锁为待生成。");
 }
 
 async function confirmCurrentRole(roleId) {
+  if (blockedByPermission("agent:operate", "确认 AI 岗位产物")) return;
   const employee = getEmployeeById(roleId);
   markEmployeeOutputsConfirmed(roleId);
   const next = roleFlowOrder[roleFlowIndex(roleId) + 1];
@@ -2380,6 +2495,7 @@ async function generateBusinessUiBoards(triggerButton = businessUiButton) {
     integrationStatus.textContent = "请先运行 AI 工作流，再生成业务 UI 图。";
     return;
   }
+  if (blockedByPermission("agent:operate", "生成业务 UI 图")) return;
 
   const original = triggerButton?.textContent || "";
   if (triggerButton) {
@@ -2394,7 +2510,7 @@ async function generateBusinessUiBoards(triggerButton = businessUiButton) {
     const uiStyle = getUiStylePrompt();
     const response = await fetch("/api/business-ui/generate", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ workflow_id: latestWorkflow.workflow_id, ui_style: uiStyle }),
     });
     const data = await readJsonResponse(response, "业务 UI 图生成失败");
@@ -2417,6 +2533,7 @@ async function generateUiDesignerConcept(triggerButton = uiDesignerButton) {
     integrationStatus.textContent = "请先运行 AI 工作流，再让 UI 设计师 Agent 生成效果图。";
     return;
   }
+  if (blockedByPermission("agent:operate", "生成 UI 设计师效果图")) return;
 
   const original = triggerButton?.textContent || "";
   if (triggerButton) {
@@ -2431,7 +2548,7 @@ async function generateUiDesignerConcept(triggerButton = uiDesignerButton) {
     const uiStyle = getUiStylePrompt();
     const response = await fetch("/api/ui-designer/generate", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ workflow_id: latestWorkflow.workflow_id, ui_style: uiStyle }),
     });
     const data = await readJsonResponse(response, "UI 设计师 Agent 生成失败");
@@ -2454,6 +2571,7 @@ async function generateImplementationPlan(issueKey) {
     integrationStatus.textContent = "请先运行工作流，再生成实施方案。";
     return;
   }
+  if (blockedByPermission("implementation:operate", "生成实施方案")) return;
 
   implementationPlans[issueKey] = { loading: true };
   renderBacklog(latestWorkflow.backlog_issues || []);
@@ -2461,7 +2579,7 @@ async function generateImplementationPlan(issueKey) {
   try {
     const response = await fetch("/api/implementation/plan", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ issue_key: issueKey }),
     });
     const data = await response.json();
@@ -2479,6 +2597,7 @@ async function generatePatchDraft(issueKey) {
     integrationStatus.textContent = "请先运行工作流，再生成 patch 草案。";
     return;
   }
+  if (blockedByPermission("implementation:operate", "生成 Patch 草案")) return;
 
   patchDrafts[issueKey] = { loading: true };
   renderBacklog(latestWorkflow.backlog_issues || []);
@@ -2486,7 +2605,7 @@ async function generatePatchDraft(issueKey) {
   try {
     const response = await fetch("/api/implementation/patch-draft", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         issue_key: issueKey,
         implementation_plan: implementationPlans[issueKey]?.plan || null,
@@ -2507,6 +2626,7 @@ async function generateCodeDraft(issueKey) {
     integrationStatus.textContent = "请先运行工作流，再生成代码。";
     return;
   }
+  if (blockedByPermission("implementation:operate", "生成代码草案")) return;
 
   implementationPlans[issueKey] = { loading: true };
   patchDrafts[issueKey] = { loading: true };
@@ -2515,7 +2635,7 @@ async function generateCodeDraft(issueKey) {
   try {
     const response = await fetch("/api/implementation/generate-code", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ issue_key: issueKey }),
     });
     const data = await response.json();
@@ -2533,6 +2653,7 @@ async function generateCodeDraft(issueKey) {
 }
 
 async function applyPatchDraft(issueKey) {
+  if (blockedByPermission("implementation:operate", "应用 Patch 草案")) return;
   const state = patchDrafts[issueKey];
   if (state?.patch && !isPatchValidated(state.patch, state.validation || {})) {
     integrationStatus.textContent = "请先完成前端验证清单，确认生成的业务代码可接受后再应用 Patch。";
@@ -2548,7 +2669,7 @@ async function applyPatchDraft(issueKey) {
   try {
     const response = await fetch("/api/implementation/apply-patch", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ patch: state.patch }),
     });
     const data = await response.json();
@@ -2564,6 +2685,7 @@ async function applyPatchDraft(issueKey) {
 }
 
 async function generateUiPreview(issueKey) {
+  if (blockedByPermission("implementation:operate", "生成 UI 预览")) return;
   const state = patchDrafts[issueKey];
   if (!state?.patch) {
     integrationStatus.textContent = "请先生成 Patch 草案。";
@@ -2581,7 +2703,7 @@ async function generateUiPreview(issueKey) {
   try {
     const response = await fetch("/api/implementation/ui-preview", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ patch: state.patch }),
     });
     const data = await response.json();
@@ -2613,6 +2735,7 @@ async function generateModuleUiPreview(issueKey) {
     integrationStatus.textContent = "请先运行工作流，再生成模块 UI 预览。";
     return;
   }
+  if (blockedByPermission("implementation:operate", "生成模块 UI 预览")) return;
 
   if (!patchDrafts[issueKey]?.patch) {
     integrationStatus.textContent = "正在为该模块生成前端代码和 Patch 草案...";
@@ -2641,6 +2764,7 @@ generateModuleUiPreview = async function generateModuleUiPreviewWithRetry(issueK
     integrationStatus.textContent = "请先运行工作流，再生成模块 UI 预览。";
     return;
   }
+  if (blockedByPermission("implementation:operate", "生成模块 UI 预览")) return;
 
   if (!patchDrafts[issueKey]?.patch) {
     integrationStatus.textContent = "正在为该模块生成前端代码和 Patch 草案...";
@@ -2674,6 +2798,7 @@ generateModuleUiPreview = async function generateModuleUiPreviewWithRetry(issueK
 };
 
 async function revertPatchDraft(issueKey) {
+  if (blockedByPermission("implementation:operate", "撤销 Patch")) return;
   const state = patchDrafts[issueKey];
   if (!state?.patch || !state?.applyResult) {
     integrationStatus.textContent = "没有可撤销的已应用 patch。";
@@ -2685,7 +2810,7 @@ async function revertPatchDraft(issueKey) {
   try {
     const response = await fetch("/api/implementation/revert-patch", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ patch: state.patch }),
     });
     const data = await response.json();
@@ -2704,6 +2829,7 @@ async function revertPatchDraft(issueKey) {
 }
 
 async function generateCommitDraft(issueKey) {
+  if (blockedByPermission("implementation:operate", "生成提交说明")) return;
   const state = patchDrafts[issueKey];
   if (!state?.patch || !state?.applyResult) {
     integrationStatus.textContent = "请先应用 patch，再生成提交说明。";
@@ -2713,7 +2839,7 @@ async function generateCommitDraft(issueKey) {
   try {
     const response = await fetch("/api/implementation/commit-draft", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         patch: state.patch,
         apply_result: state.applyResult,
@@ -2785,6 +2911,7 @@ function syncActiveProjectToForm(project) {
 
 async function createProject(event) {
   event.preventDefault();
+  if (blockedByPermission("project:create", "创建项目")) return;
   const button = projectForm.querySelector("button");
   const original = button.textContent;
   button.disabled = true;
@@ -2793,7 +2920,7 @@ async function createProject(event) {
   try {
     const response = await fetch("/api/projects", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(formToJson(projectForm)),
     });
     const data = await response.json();
@@ -3003,14 +3130,53 @@ projectList.addEventListener("click", (event) => {
   selectProject(card.dataset.projectId);
 });
 
-loginForm?.addEventListener("submit", (event) => {
+loginForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  localStorage.setItem("aiWorkflowLoggedIn", "true");
-  showView("projects");
-  loadProjects();
+  const button = loginForm.querySelector("button[type='submit']");
+  const original = button?.textContent || "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "正在进入...";
+  }
+  try {
+    const response = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: loginForm.elements.username?.value || "delivery.manager",
+        password: loginForm.elements.password?.value || "",
+        member_identity: memberIdentitySelect?.value || "delivery_manager",
+      }),
+    });
+    const data = await readJsonResponse(response, "登录失败");
+    sessionState = data;
+    localStorage.setItem("aiWorkflowLoggedIn", "true");
+    localStorage.setItem(memberIdentityStorageKey, data.member_identity || memberIdentitySelect?.value || "delivery_manager");
+    renderMemberIdentityUi();
+    showView("projects");
+    loadProjects();
+  } catch (error) {
+    if (memberIdentityHint) memberIdentityHint.textContent = error.message;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
 });
 
-logoutButton?.addEventListener("click", () => {
+memberIdentitySelect?.addEventListener("change", () => {
+  localStorage.setItem(memberIdentityStorageKey, memberIdentitySelect.value || "delivery_manager");
+  renderMemberIdentityUi();
+});
+
+logoutButton?.addEventListener("click", async () => {
+  try {
+    await fetch("/api/auth/logout", { method: "POST" });
+  } catch {
+    // Local logout still clears the browser view if the server is unavailable.
+  }
+  sessionState = null;
   localStorage.removeItem("aiWorkflowLoggedIn");
   stopStatusPolling();
   showView("auth");
@@ -3024,6 +3190,7 @@ backToProjectsButton?.addEventListener("click", () => {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (blockedByPermission("workflow:run", "运行 AI 工作流")) return;
   stopStatusPolling();
   runButton.disabled = true;
   runButton.textContent = "正在生成...";
@@ -3040,7 +3207,7 @@ form.addEventListener("submit", async (event) => {
   try {
     const response = await fetch("/api/workflows/run", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(formToJson(form)),
     });
 
@@ -3082,6 +3249,7 @@ uiDesignerButton?.addEventListener("click", generateUiDesignerConcept);
 businessUiButton?.addEventListener("click", generateBusinessUiBoards);
 exportMarkdownButton?.addEventListener("click", () => exportDeliveryPackage("markdown", exportMarkdownButton));
 exportHtmlButton?.addEventListener("click", () => exportDeliveryPackage("html", exportHtmlButton));
-requireLoginView();
-loadRuntimeConfig();
-if (isLoggedIn()) loadProjects();
+refreshSession().then(() => {
+  loadRuntimeConfig();
+  if (isLoggedIn()) loadProjects();
+});

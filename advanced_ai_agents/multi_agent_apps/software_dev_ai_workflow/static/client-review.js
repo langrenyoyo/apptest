@@ -53,6 +53,11 @@ async function readJson(response, fallbackMessage) {
   return data;
 }
 
+function setReviewBusy(busy) {
+  confirmButton.disabled = busy || readonlyMode || Boolean(currentExport?.frozen);
+  needsUpdateButton.disabled = busy || readonlyMode || Boolean(currentExport?.frozen);
+}
+
 function renderEmpty(message) {
   projectName.textContent = "暂无可验收交付包";
   projectSummary.textContent = message;
@@ -60,6 +65,7 @@ function renderEmpty(message) {
   packageTitle.textContent = "尚未导出";
   packageMeta.innerHTML = "";
   scopeList.innerHTML = "";
+  customerFeedback.disabled = true;
   confirmButton.disabled = true;
   needsUpdateButton.disabled = true;
 }
@@ -132,7 +138,7 @@ async function updateStatus(status) {
   if (!currentExport) return;
   const button = status === "confirmed" ? confirmButton : needsUpdateButton;
   const original = button.textContent;
-  button.disabled = true;
+  setReviewBusy(true);
   button.textContent = "提交中...";
   try {
     const response = await fetch("/api/delivery-package/status", {
@@ -151,8 +157,8 @@ async function updateStatus(status) {
   } catch (error) {
     reviewStatus.innerHTML = `<strong>${escapeHtml(error.message)}</strong><span class="status-pill needs_update">提交失败</span>`;
   } finally {
-    button.disabled = false;
     button.textContent = original;
+    setReviewBusy(false);
   }
 }
 
